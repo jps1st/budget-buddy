@@ -1,8 +1,15 @@
 import { Trash2, Plus } from "lucide-react";
 
-export type Entry = { id: string; label: string; amount: number };
+export type Entry = {
+  id: string;
+  label: string;
+  amount: number;
+  accountId?: string;
+};
 
 type Variant = "income" | "expense" | "leftover";
+
+export type AccountOption = { id: string; label: string };
 
 interface Props {
   title: string;
@@ -12,6 +19,7 @@ interface Props {
   totalLabel: string;
   total: number;
   readOnly?: boolean;
+  accounts?: AccountOption[];
 }
 
 const variantClasses: Record<Variant, string> = {
@@ -20,13 +28,35 @@ const variantClasses: Record<Variant, string> = {
   leftover: "bg-leftover text-leftover-foreground",
 };
 
-export function BudgetTable({ title, variant, entries, onChange, totalLabel, total, readOnly }: Props) {
+export function BudgetTable({
+  title,
+  variant,
+  entries,
+  onChange,
+  totalLabel,
+  total,
+  readOnly,
+  accounts,
+}: Props) {
   const updateEntry = (id: string, patch: Partial<Entry>) => {
     onChange(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
   };
   const removeEntry = (id: string) => onChange(entries.filter((e) => e.id !== id));
   const addEntry = () =>
-    onChange([...entries, { id: crypto.randomUUID(), label: "", amount: 0 }]);
+    onChange([
+      ...entries,
+      {
+        id: crypto.randomUUID(),
+        label: "",
+        amount: 0,
+        accountId: accounts && accounts.length > 0 ? accounts[0].id : undefined,
+      },
+    ]);
+
+  const showAccount = !!accounts;
+  const gridCols = showAccount
+    ? "grid-cols-[1fr_8rem_6rem_auto]"
+    : "grid-cols-[1fr_auto_auto]";
 
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
@@ -35,7 +65,10 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
       </div>
       <div className="divide-y divide-border">
         {entries.map((entry) => (
-          <div key={entry.id} className="group grid grid-cols-[1fr_auto_auto] items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors">
+          <div
+            key={entry.id}
+            className={`group grid ${gridCols} items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors`}
+          >
             <input
               type="text"
               value={entry.label}
@@ -44,6 +77,21 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
               placeholder="Item"
               className="bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
             />
+            {showAccount && (
+              <select
+                value={entry.accountId ?? ""}
+                onChange={(e) => updateEntry(entry.id, { accountId: e.target.value || undefined })}
+                disabled={readOnly}
+                className="bg-transparent text-xs outline-none rounded px-2 py-1 border border-border/60 focus:bg-background"
+              >
+                <option value="">— Account —</option>
+                {accounts!.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label || "Untitled"}
+                  </option>
+                ))}
+              </select>
+            )}
             <input
               type="number"
               value={entry.amount === 0 ? "" : entry.amount}
