@@ -1,17 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { BudgetTable, type Entry, type AccountOption } from "@/components/BudgetTable";
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
+import { BudgetTable, type Entry } from "@/components/BudgetTable";
 
 export const Route = createFileRoute("/")({
   component: BudgetApp,
   head: () => ({
     meta: [
       { title: "Budget — Plan your monthly cash flow" },
-      {
-        name: "description",
-        content:
-          "A simple, beautiful spreadsheet to budget your income and expenses across accounts for any period.",
-      },
+      { name: "description", content: "A simple, beautiful spreadsheet to budget your income and expenses for any period." },
     ],
   }),
 });
@@ -25,20 +22,20 @@ interface BudgetState {
   expenses: Entry[];
 }
 
-const STORAGE_KEY = "budget-app-state-v2";
+const STORAGE_KEY = "budget-app-state-v1";
 
 const defaultState: BudgetState = {
   period: "monthly",
   label: "May 2026",
   income: [
-    { id: "i1", label: "Checking", amount: 0 },
-    { id: "i2", label: "Savings", amount: 0 },
+    { id: "i1", label: "Salary", amount: 0 },
+    { id: "i2", label: "Side income", amount: 0 },
   ],
   expenses: [
-    { id: "e1", label: "Rent", amount: 0, accountId: "i1" },
-    { id: "e2", label: "Groceries", amount: 0, accountId: "i1" },
-    { id: "e3", label: "Utilities", amount: 0, accountId: "i1" },
-    { id: "e4", label: "Transport", amount: 0, accountId: "i1" },
+    { id: "e1", label: "Rent", amount: 0 },
+    { id: "e2", label: "Groceries", amount: 0 },
+    { id: "e3", label: "Utilities", amount: 0 },
+    { id: "e4", label: "Transport", amount: 0 },
   ],
 };
 
@@ -58,45 +55,15 @@ function BudgetApp() {
     } catch {}
   }, [state]);
 
-  const totalIncome = useMemo(
-    () => state.income.reduce((s, e) => s + (e.amount || 0), 0),
-    [state.income],
-  );
-  const totalExpenses = useMemo(
-    () => state.expenses.reduce((s, e) => s + (e.amount || 0), 0),
-    [state.expenses],
-  );
+  const totalIncome = useMemo(() => state.income.reduce((s, e) => s + (e.amount || 0), 0), [state.income]);
+  const totalExpenses = useMemo(() => state.expenses.reduce((s, e) => s + (e.amount || 0), 0), [state.expenses]);
   const leftover = totalIncome - totalExpenses;
 
-  const accountOptions: AccountOption[] = useMemo(
-    () => state.income.map((i) => ({ id: i.id, label: i.label || "Untitled" })),
-    [state.income],
-  );
-
-  const accountSummary = useMemo(() => {
-    const spentByAccount = new Map<string, number>();
-    let unassigned = 0;
-    for (const e of state.expenses) {
-      if (e.accountId && state.income.some((i) => i.id === e.accountId)) {
-        spentByAccount.set(e.accountId, (spentByAccount.get(e.accountId) || 0) + (e.amount || 0));
-      } else {
-        unassigned += e.amount || 0;
-      }
-    }
-    return {
-      rows: state.income.map((acc) => {
-        const spent = spentByAccount.get(acc.id) || 0;
-        return {
-          id: acc.id,
-          label: acc.label || "Untitled",
-          income: acc.amount || 0,
-          spent,
-          remaining: (acc.amount || 0) - spent,
-        };
-      }),
-      unassigned,
-    };
-  }, [state.income, state.expenses]);
+  const chartData = [
+    { name: "Total income", value: Math.max(totalIncome, 0), color: "var(--chart-1)" },
+    { name: "Total expenses", value: Math.max(totalExpenses, 0), color: "var(--chart-2)" },
+    { name: "Left over", value: Math.max(leftover, 0), color: "var(--chart-3)" },
+  ].filter((d) => d.value > 0);
 
   return (
     <div className="min-h-screen bg-background">
@@ -104,9 +71,7 @@ function BudgetApp() {
         <header className="mb-8 flex flex-wrap items-end justify-between gap-4">
           <div>
             <h1 className="text-4xl font-bold tracking-tight text-foreground">Budget</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              Plan income and expenses across accounts for any period.
-            </p>
+            <p className="text-sm text-muted-foreground mt-1">Plan your income and expenses for any period.</p>
           </div>
           <div className="flex items-center gap-2">
             <input
@@ -132,7 +97,7 @@ function BudgetApp() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="space-y-6">
             <BudgetTable
-              title="Money In (Accounts)"
+              title="Money In"
               variant="income"
               entries={state.income}
               onChange={(income) => setState({ ...state, income })}
@@ -146,7 +111,6 @@ function BudgetApp() {
               onChange={(expenses) => setState({ ...state, expenses })}
               totalLabel="Total expenses"
               total={totalExpenses}
-              accounts={accountOptions}
             />
           </div>
 
@@ -157,62 +121,49 @@ function BudgetApp() {
               </div>
               <div className="flex items-center justify-between px-4 py-3">
                 <span className="text-sm font-medium">Income minus expenses</span>
-                <span
-                  className={`text-lg font-semibold tabular-nums ${
-                    leftover < 0 ? "text-destructive" : "text-foreground"
-                  }`}
-                >
+                <span className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}>
                   {leftover.toFixed(2)}
                 </span>
               </div>
             </div>
 
-            <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
-              <div className="px-4 py-2.5 text-sm font-semibold tracking-wide uppercase bg-muted/60 text-foreground">
-                Accounts
-              </div>
-              <div className="divide-y divide-border">
-                <div className="grid grid-cols-[1fr_5rem_5rem_5rem] gap-2 px-4 py-2 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  <span>Account</span>
-                  <span className="text-right">Income</span>
-                  <span className="text-right">Spent</span>
-                  <span className="text-right">Remaining</span>
-                </div>
-                {accountSummary.rows.length === 0 && (
-                  <div className="px-4 py-6 text-sm text-muted-foreground text-center">
-                    Add an account in Money In to start tracking.
-                  </div>
-                )}
-                {accountSummary.rows.map((row) => (
-                  <div
-                    key={row.id}
-                    className="grid grid-cols-[1fr_5rem_5rem_5rem] gap-2 px-4 py-2.5 text-sm items-center"
-                  >
-                    <span className="font-medium truncate">{row.label}</span>
-                    <span className="text-right tabular-nums text-muted-foreground">
-                      {row.income.toFixed(2)}
-                    </span>
-                    <span className="text-right tabular-nums" style={{ color: "var(--expense)" }}>
-                      {row.spent.toFixed(2)}
-                    </span>
-                    <span
-                      className={`text-right tabular-nums font-semibold ${
-                        row.remaining < 0 ? "text-destructive" : ""
-                      }`}
-                      style={row.remaining >= 0 ? { color: "var(--income)" } : undefined}
-                    >
-                      {row.remaining.toFixed(2)}
-                    </span>
-                  </div>
-                ))}
-                {accountSummary.unassigned > 0 && (
-                  <div className="grid grid-cols-[1fr_5rem_5rem_5rem] gap-2 px-4 py-2.5 text-sm items-center bg-muted/30">
-                    <span className="italic text-muted-foreground">Unassigned</span>
-                    <span className="text-right tabular-nums text-muted-foreground">—</span>
-                    <span className="text-right tabular-nums" style={{ color: "var(--expense)" }}>
-                      {accountSummary.unassigned.toFixed(2)}
-                    </span>
-                    <span className="text-right tabular-nums text-muted-foreground">—</span>
+            <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground text-center mb-4">
+                Income / Expenses
+              </h2>
+              <div className="h-72">
+                {chartData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={chartData}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={100}
+                        label={({ value }) => value.toFixed(2)}
+                        labelLine={false}
+                      >
+                        {chartData.map((entry, i) => (
+                          <Cell key={i} fill={entry.color} />
+                        ))}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{
+                          backgroundColor: "var(--popover)",
+                          border: "1px solid var(--border)",
+                          borderRadius: "0.5rem",
+                          fontSize: "0.875rem",
+                        }}
+                        formatter={(v: number) => v.toFixed(2)}
+                      />
+                      <Legend iconType="circle" wrapperStyle={{ fontSize: "0.75rem" }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                    Add income or expenses to see the chart.
                   </div>
                 )}
               </div>
