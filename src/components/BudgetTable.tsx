@@ -47,24 +47,33 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
       </div>
       <div className="divide-y divide-border">
         {entries.map((entry) => (
-          <div key={entry.id} className="group grid grid-cols-[1fr_auto_auto] items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors">
+          <div
+            key={entry.id}
+            className={`group px-3 py-2 hover:bg-muted/40 transition-colors ${
+              pendingDelete === entry.id
+                ? "flex flex-col gap-2"
+                : "grid grid-cols-[1fr_auto_auto] items-center gap-2"
+            }`}
+          >
             {pendingDelete === entry.id ? (
               <>
-                <span className="text-sm text-muted-foreground px-2 truncate">
+                <span className="text-sm text-muted-foreground px-1 truncate">
                   Remove <span className="font-medium text-foreground">{entry.label || "this row"}</span>?
                 </span>
-                <button
-                  onClick={() => confirmDelete(entry.id)}
-                  className="text-xs px-2 py-1 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
-                >
-                  Remove
-                </button>
-                <button
-                  onClick={cancelDelete}
-                  className="text-xs px-2 py-1 rounded border border-border hover:bg-muted transition-colors"
-                >
-                  Cancel
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => confirmDelete(entry.id)}
+                    className="flex-1 text-xs px-2 py-1.5 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
+                  >
+                    Remove
+                  </button>
+                  <button
+                    onClick={cancelDelete}
+                    className="flex-1 text-xs px-2 py-1.5 rounded border border-border hover:bg-muted transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
               </>
             ) : (
               <>
@@ -74,7 +83,7 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
                   readOnly={readOnly}
                   onChange={(e) => updateEntry(entry.id, { label: e.target.value })}
                   placeholder="Item"
-                  className="bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                  className="bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1 min-w-0"
                 />
                 <input
                   type="number"
@@ -82,18 +91,18 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
                   readOnly={readOnly}
                   onChange={(e) => updateEntry(entry.id, { amount: parseFloat(e.target.value) || 0 })}
                   placeholder="0.00"
-                  className="bg-transparent text-sm text-right outline-none w-24 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                  className="bg-transparent text-sm text-right outline-none w-16 sm:w-24 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
                 />
                 {!readOnly ? (
                   <button
                     onClick={() => requestDelete(entry.id)}
-                    className="text-muted-foreground hover:text-destructive p-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                    className="text-muted-foreground hover:text-destructive p-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shrink-0"
                     aria-label="Remove"
                   >
-                    <Trash2 className="size-3.5" />
+                    <Trash2 className="size-4" />
                   </button>
                 ) : (
-                  <span className="w-5" />
+                  <span className="w-5 shrink-0" />
                 )}
               </>
             )}
