@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { Download, Upload } from "lucide-react";
+import { Download, Upload, Plus, X } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 
 export const Route = createFileRoute("/")({
@@ -9,34 +9,44 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Budget Editor — Import, edit and export your budget" },
-      { name: "description", content: "A simple budget editor. Import a budget file, edit income and expenses, and export it back." },
+      { name: "description", content: "A simple budget editor with tabs. Import, edit and export budgets as .budget.json files." },
     ],
   }),
 });
 
-interface BudgetState {
+interface Budget {
+  id: string;
   title: string;
   subtitle: string;
   income: Entry[];
   expenses: Entry[];
 }
 
-const STORAGE_KEY = "budget-app-state-v2";
+interface AppState {
+  budgets: Budget[];
+  activeId: string;
+}
 
-const defaultState: BudgetState = {
-  title: "My Budget",
-  subtitle: "",
-  income: [
-    { id: "i1", label: "Salary", amount: 0 },
-    { id: "i2", label: "Side income", amount: 0 },
-  ],
-  expenses: [
-    { id: "e1", label: "Rent", amount: 0 },
-    { id: "e2", label: "Groceries", amount: 0 },
-    { id: "e3", label: "Utilities", amount: 0 },
-    { id: "e4", label: "Transport", amount: 0 },
-  ],
-};
+const STORAGE_KEY = "budget-app-state-v3";
+
+function createBudget(overrides: Partial<Budget> = {}): Budget {
+  return {
+    id: crypto.randomUUID(),
+    title: "My Budget",
+    subtitle: "",
+    income: [
+      { id: crypto.randomUUID(), label: "Salary", amount: 0 },
+      { id: crypto.randomUUID(), label: "Side income", amount: 0 },
+    ],
+    expenses: [
+      { id: crypto.randomUUID(), label: "Rent", amount: 0 },
+      { id: crypto.randomUUID(), label: "Groceries", amount: 0 },
+      { id: crypto.randomUUID(), label: "Utilities", amount: 0 },
+      { id: crypto.randomUUID(), label: "Transport", amount: 0 },
+    ],
+    ...overrides,
+  };
+}
 
 function sanitizeEntries(arr: unknown): Entry[] {
   if (!Array.isArray(arr)) return [];
@@ -49,15 +59,23 @@ function sanitizeEntries(arr: unknown): Entry[] {
     }));
 }
 
+function defaultAppState(): AppState {
+  const b = createBudget();
+  return { budgets: [b], activeId: b.id };
+}
+
 function BudgetApp() {
-  const [state, setState] = useState<BudgetState>(defaultState);
+  const [state, setState] = useState<AppState>(defaultAppState);
   const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setState(JSON.parse(raw));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.budgets?.length) setState(parsed);
+      }
     } catch {}
   }, []);
 
@@ -67,8 +85,35 @@ function BudgetApp() {
     } catch {}
   }, [state]);
 
-  const totalIncome = useMemo(() => state.income.reduce((s, e) => s + (e.amount || 0), 0), [state.income]);
-  const totalExpenses = useMemo(() => state.expenses.reduce((s, e) => s + (e.amount || 0), 0), [state.expenses]);
+  const active = state.budgets.find((b) => b.id === state.activeId) ?? state.budgets[0];
+
+  const updateActive = (patch: Partial<Budget>) => {
+    setState((s) => ({
+      ...s,
+      budgets: s.budgets.map((b) => (b.id === s.activeId ? { ...b, ...patch } : b)),
+    }));
+  };
+
+  const openBudget = (b: Budget) => {
+    setState((s) => ({ budgets: [...s.budgets, b], activeId: b.id }));
+  };
+
+  const newBudget = () => openBudget(createBudget({ title: "Untitled budget" }));
+
+  const closeBudget = (id: string) => {
+    setState((s) => {
+      const remaining = s.budgets.filter((b) => b.id !== id);
+      if (remaining.length === 0) {
+        const b = createBudget({ title: "Untitled budget" });
+        return { budgets: [b], activeId: b.id };
+      }
+      const activeId = s.activeId === id ? remaining[remaining.length - 1].id : s.activeId;
+      return { budgets: remaining, activeId };
+    });
+  };
+
+  const totalIncome = useMemo(() => active.income.reduce((s, e) => s + (e.amount || 0), 0), [active.income]);
+  const totalExpenses = useMemo(() => active.expenses.reduce((s, e) => s + (e.amount || 0), 0), [active.expenses]);
   const leftover = totalIncome - totalExpenses;
 
   const chartData = [
@@ -81,12 +126,15 @@ function BudgetApp() {
     const payload = {
       type: "lovable-budget",
       version: 1,
-      ...state,
+      title: active.title,
+      subtitle: active.subtitle,
+      income: active.income,
+      expenses: active.expenses,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    const safeName = (state.title || "budget").replace(/[^\w\-]+/g, "_").toLowerCase();
+    const safeName = (active.title || "budget").replace(/[^\w\-]+/g, "_").toLowerCase();
     a.href = url;
     a.download = `${safeName}.budget.json`;
     a.click();
@@ -96,41 +144,86 @@ function BudgetApp() {
   const handleImportClick = () => fileInputRef.current?.click();
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files ?? []);
     e.target.value = "";
-    if (!file) return;
+    if (files.length === 0) return;
     setImportError(null);
     try {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      const next: BudgetState = {
-        title: typeof data.title === "string" ? data.title : "Imported budget",
-        subtitle: typeof data.subtitle === "string" ? data.subtitle : "",
-        income: sanitizeEntries(data.income),
-        expenses: sanitizeEntries(data.expenses),
-      };
-      setState(next);
-    } catch (err) {
+      const imported: Budget[] = [];
+      for (const file of files) {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        imported.push(createBudget({
+          title: typeof data.title === "string" ? data.title : file.name.replace(/\.budget\.json$|\.json$/i, ""),
+          subtitle: typeof data.subtitle === "string" ? data.subtitle : "",
+          income: sanitizeEntries(data.income),
+          expenses: sanitizeEntries(data.expenses),
+        }));
+      }
+      setState((s) => ({
+        budgets: [...s.budgets, ...imported],
+        activeId: imported[imported.length - 1].id,
+      }));
+    } catch {
       setImportError("Could not read that file. Please pick a valid .budget.json file.");
     }
   };
 
   return (
     <div className="min-h-screen bg-background">
+      {/* Tab bar */}
+      <div className="border-b border-border bg-card">
+        <div className="max-w-6xl mx-auto px-6 flex items-center gap-1 overflow-x-auto">
+          {state.budgets.map((b) => {
+            const isActive = b.id === state.activeId;
+            return (
+              <div
+                key={b.id}
+                onClick={() => setState((s) => ({ ...s, activeId: b.id }))}
+                className={`group flex items-center gap-2 px-3 py-2 text-sm border-b-2 cursor-pointer whitespace-nowrap transition-colors ${
+                  isActive
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <span className="max-w-[180px] truncate">{b.title || "Untitled"}</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeBudget(b.id);
+                  }}
+                  className="opacity-60 hover:opacity-100 hover:bg-muted rounded p-0.5"
+                  aria-label="Close tab"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            );
+          })}
+          <button
+            onClick={newBudget}
+            className="ml-1 p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded"
+            aria-label="New budget"
+          >
+            <Plus className="size-4" />
+          </button>
+        </div>
+      </div>
+
       <div className="max-w-6xl mx-auto px-6 py-10">
         <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             <input
               type="text"
-              value={state.title}
-              onChange={(e) => setState({ ...state, title: e.target.value })}
+              value={active.title}
+              onChange={(e) => updateActive({ title: e.target.value })}
               placeholder="Untitled budget"
               className="w-full bg-transparent text-4xl font-bold tracking-tight text-foreground outline-none focus:bg-card rounded px-1 -mx-1"
             />
             <input
               type="text"
-              value={state.subtitle}
-              onChange={(e) => setState({ ...state, subtitle: e.target.value })}
+              value={active.subtitle}
+              onChange={(e) => updateActive({ subtitle: e.target.value })}
               placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
               className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60"
             />
@@ -140,6 +233,7 @@ function BudgetApp() {
               ref={fileInputRef}
               type="file"
               accept="application/json,.json"
+              multiple
               onChange={handleFileChange}
               className="hidden"
             />
@@ -169,16 +263,16 @@ function BudgetApp() {
             <BudgetTable
               title="Money In"
               variant="income"
-              entries={state.income}
-              onChange={(income) => setState({ ...state, income })}
+              entries={active.income}
+              onChange={(income) => updateActive({ income })}
               totalLabel="Total income"
               total={totalIncome}
             />
             <BudgetTable
               title="Money Out"
               variant="expense"
-              entries={state.expenses}
-              onChange={(expenses) => setState({ ...state, expenses })}
+              entries={active.expenses}
+              onChange={(expenses) => updateActive({ expenses })}
               totalLabel="Total expenses"
               total={totalExpenses}
             />
