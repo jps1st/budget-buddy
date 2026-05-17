@@ -1,0 +1,19 @@
+{
+  "apps": [
+    {
+      "name": "money-maker-sheets",
+      "interpreter": "/home/node10/.nvm/versions/node/v22.22.2/bin/node",
+      "script": "npm",
+      "args": "run preview",
+      "cwd": ".",
+      "instances": 1,
+      "exec_mode": "fork",
+      "watch": false,
+      "env_production": {
+        "NODE_ENV": "production",
+        "HOST": "0.0.0.0",
+        "PORT": "4173"
+      }
+    }
+  ]
+}
