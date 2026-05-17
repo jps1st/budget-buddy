@@ -1,15 +1,6 @@
 import { openDB, type IDBPDatabase } from "idb";
 import type { Entry } from "@/components/BudgetTable";
 
-export interface Budget {
-  id: string;
-  title: string;
-  subtitle: string;
-  income: Entry[];
-  expenses: Expense[] extends never ? never : Entry[];
-}
-
-// (Avoid clever typing - simple alias)
 export type BudgetRow = {
   id: string;
   title: string;
