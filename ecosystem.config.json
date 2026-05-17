@@ -1,7 +1,7 @@
 {
   "apps": [
     {
-      "name": "money-maker-sheets",
+      "name": "budget",
       "interpreter": "/home/node10/.nvm/versions/node/v22.22.2/bin/node",
       "script": "npm",
       "args": "run start",
