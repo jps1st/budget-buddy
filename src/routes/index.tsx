@@ -20,6 +20,16 @@ import {
   type BudgetRow,
 } from "@/lib/budget-storage";
 
+function uuid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 export const Route = createFileRoute("/")({
   component: BudgetApp,
   head: () => ({
@@ -36,18 +46,18 @@ export const Route = createFileRoute("/")({
 
 function createBudget(overrides: Partial<BudgetRow> = {}): BudgetRow {
   return {
-    id: crypto.randomUUID(),
+    id: uuid(),
     title: "My Budget",
     subtitle: "",
     income: [
-      { id: crypto.randomUUID(), label: "Salary", amount: 0 },
-      { id: crypto.randomUUID(), label: "Side income", amount: 0 },
+      { id: uuid(), label: "Salary", amount: 0 },
+      { id: uuid(), label: "Side income", amount: 0 },
     ],
     expenses: [
-      { id: crypto.randomUUID(), label: "Rent", amount: 0 },
-      { id: crypto.randomUUID(), label: "Groceries", amount: 0 },
-      { id: crypto.randomUUID(), label: "Utilities", amount: 0 },
-      { id: crypto.randomUUID(), label: "Transport", amount: 0 },
+      { id: uuid(), label: "Rent", amount: 0 },
+      { id: uuid(), label: "Groceries", amount: 0 },
+      { id: uuid(), label: "Utilities", amount: 0 },
+      { id: uuid(), label: "Transport", amount: 0 },
     ],
     archived: false,
     updatedAt: Date.now(),
@@ -61,7 +71,7 @@ function sanitizeEntries(arr: unknown): Entry[] {
   return arr
     .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
     .map((e) => ({
-      id: typeof e.id === "string" ? e.id : crypto.randomUUID(),
+      id: typeof e.id === "string" ? e.id : uuid(),
       label: typeof e.label === "string" ? e.label : "",
       amount:
         typeof e.amount === "number" ? e.amount : parseFloat(String(e.amount)) || 0,
