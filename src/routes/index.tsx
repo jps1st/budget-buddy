@@ -1,35 +1,40 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { Download, Upload, Plus, X } from "lucide-react";
+import { Download, Upload, Plus, X, Archive, RotateCcw, Trash2 } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  loadAll,
+  putBudget,
+  deleteBudget,
+  getMeta,
+  setActiveId as persistActiveId,
+  type BudgetRow,
+} from "@/lib/budget-storage";
 
 export const Route = createFileRoute("/")({
   component: BudgetApp,
   head: () => ({
     meta: [
       { title: "Budget Editor — Import, edit and export your budget" },
-      { name: "description", content: "A simple budget editor with tabs. Import, edit and export budgets as .budget.json files." },
+      {
+        name: "description",
+        content:
+          "A simple budget editor with tabs, IndexedDB persistence, and archiving. Import, edit and export budgets as .budget.json files.",
+      },
     ],
   }),
 });
 
-interface Budget {
-  id: string;
-  title: string;
-  subtitle: string;
-  income: Entry[];
-  expenses: Entry[];
-}
-
-interface AppState {
-  budgets: Budget[];
-  activeId: string;
-}
-
-const STORAGE_KEY = "budget-app-state-v3";
-
-function createBudget(overrides: Partial<Budget> = {}): Budget {
+function createBudget(overrides: Partial<BudgetRow> = {}): BudgetRow {
   return {
     id: crypto.randomUUID(),
     title: "My Budget",
@@ -44,6 +49,9 @@ function createBudget(overrides: Partial<Budget> = {}): Budget {
       { id: crypto.randomUUID(), label: "Utilities", amount: 0 },
       { id: crypto.randomUUID(), label: "Transport", amount: 0 },
     ],
+    archived: false,
+    updatedAt: Date.now(),
+    order: Date.now(),
     ...overrides,
   };
 }
@@ -55,65 +63,147 @@ function sanitizeEntries(arr: unknown): Entry[] {
     .map((e) => ({
       id: typeof e.id === "string" ? e.id : crypto.randomUUID(),
       label: typeof e.label === "string" ? e.label : "",
-      amount: typeof e.amount === "number" ? e.amount : parseFloat(String(e.amount)) || 0,
+      amount:
+        typeof e.amount === "number" ? e.amount : parseFloat(String(e.amount)) || 0,
     }));
 }
 
-function defaultAppState(): AppState {
-  const b = createBudget();
-  return { budgets: [b], activeId: b.id };
+function gen6() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 function BudgetApp() {
-  const [state, setState] = useState<AppState>(defaultAppState);
+  const [budgets, setBudgets] = useState<BudgetRow[]>([]);
+  const [activeId, setActiveIdState] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [closeTarget, setCloseTarget] = useState<BudgetRow | null>(null);
+  const [closeCode, setCloseCode] = useState("");
+  const [closeInput, setCloseInput] = useState("");
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Load from IDB on mount
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed?.budgets?.length) setState(parsed);
+    (async () => {
+      const [rows, meta] = await Promise.all([loadAll(), getMeta()]);
+      if (rows.length === 0) {
+        const b = createBudget();
+        await putBudget(b);
+        await persistActiveId(b.id);
+        setBudgets([b]);
+        setActiveIdState(b.id);
+      } else {
+        setBudgets(rows);
+        const openRows = rows.filter((r) => !r.archived);
+        const id =
+          meta.activeId && openRows.find((r) => r.id === meta.activeId)
+            ? meta.activeId
+            : openRows[0]?.id ?? null;
+        setActiveIdState(id);
       }
-    } catch {}
+      setLoaded(true);
+    })();
   }, []);
 
+  const openBudgets = useMemo(
+    () => budgets.filter((b) => !b.archived).sort((a, b) => a.order - b.order),
+    [budgets],
+  );
+  const archivedBudgets = useMemo(
+    () =>
+      budgets
+        .filter((b) => b.archived)
+        .sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0)),
+    [budgets],
+  );
+
+  const active =
+    budgets.find((b) => b.id === activeId && !b.archived) ?? openBudgets[0] ?? null;
+
+  // Persist active id
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch {}
-  }, [state]);
+    if (loaded) persistActiveId(active?.id ?? null);
+  }, [active?.id, loaded]);
 
-  const active = state.budgets.find((b) => b.id === state.activeId) ?? state.budgets[0];
-
-  const updateActive = (patch: Partial<Budget>) => {
-    setState((s) => ({
-      ...s,
-      budgets: s.budgets.map((b) => (b.id === s.activeId ? { ...b, ...patch } : b)),
-    }));
+  const persistRow = (row: BudgetRow) => {
+    void putBudget(row);
   };
 
-  const openBudget = (b: Budget) => {
-    setState((s) => ({ budgets: [...s.budgets, b], activeId: b.id }));
+  const updateActive = (patch: Partial<BudgetRow>) => {
+    if (!active) return;
+    const updated: BudgetRow = { ...active, ...patch, updatedAt: Date.now() };
+    setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+    persistRow(updated);
   };
 
-  const newBudget = () => openBudget(createBudget({ title: "Untitled budget" }));
+  const addBudget = (b: BudgetRow) => {
+    setBudgets((arr) => [...arr, b]);
+    persistRow(b);
+    setActiveIdState(b.id);
+  };
 
-  const closeBudget = (id: string) => {
-    setState((s) => {
-      const remaining = s.budgets.filter((b) => b.id !== id);
-      if (remaining.length === 0) {
-        const b = createBudget({ title: "Untitled budget" });
-        return { budgets: [b], activeId: b.id };
+  const newBudget = () =>
+    addBudget(createBudget({ title: "Untitled budget", order: Date.now() }));
+
+  const requestCloseTab = (b: BudgetRow) => {
+    setCloseCode(gen6());
+    setCloseInput("");
+    setCloseTarget(b);
+  };
+
+  const confirmCloseTab = async () => {
+    if (!closeTarget || closeInput !== closeCode) return;
+    const archived: BudgetRow = {
+      ...closeTarget,
+      archived: true,
+      archivedAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await putBudget(archived);
+    setBudgets((arr) => arr.map((b) => (b.id === archived.id ? archived : b)));
+    // Pick a new active tab if needed
+    if (activeId === archived.id) {
+      const remaining = openBudgets.filter((b) => b.id !== archived.id);
+      if (remaining.length > 0) {
+        setActiveIdState(remaining[remaining.length - 1].id);
+      } else {
+        const nb = createBudget({ title: "Untitled budget" });
+        await putBudget(nb);
+        setBudgets((arr) => [...arr, nb]);
+        setActiveIdState(nb.id);
       }
-      const activeId = s.activeId === id ? remaining[remaining.length - 1].id : s.activeId;
-      return { budgets: remaining, activeId };
-    });
+    }
+    setCloseTarget(null);
   };
 
-  const totalIncome = useMemo(() => active.income.reduce((s, e) => s + (e.amount || 0), 0), [active.income]);
-  const totalExpenses = useMemo(() => active.expenses.reduce((s, e) => s + (e.amount || 0), 0), [active.expenses]);
+  const restoreArchived = async (b: BudgetRow) => {
+    const restored: BudgetRow = {
+      ...b,
+      archived: false,
+      archivedAt: undefined,
+      order: Date.now(),
+      updatedAt: Date.now(),
+    };
+    await putBudget(restored);
+    setBudgets((arr) => arr.map((x) => (x.id === restored.id ? restored : x)));
+    setActiveIdState(restored.id);
+    setArchiveOpen(false);
+  };
+
+  const permanentlyDelete = async (b: BudgetRow) => {
+    await deleteBudget(b.id);
+    setBudgets((arr) => arr.filter((x) => x.id !== b.id));
+  };
+
+  const totalIncome = useMemo(
+    () => (active?.income ?? []).reduce((s, e) => s + (e.amount || 0), 0),
+    [active?.income],
+  );
+  const totalExpenses = useMemo(
+    () => (active?.expenses ?? []).reduce((s, e) => s + (e.amount || 0), 0),
+    [active?.expenses],
+  );
   const leftover = totalIncome - totalExpenses;
 
   const chartData = [
@@ -123,6 +213,7 @@ function BudgetApp() {
   ].filter((d) => d.value > 0);
 
   const handleExport = () => {
+    if (!active) return;
     const payload = {
       type: "lovable-budget",
       version: 1,
@@ -131,7 +222,9 @@ function BudgetApp() {
       income: active.income,
       expenses: active.expenses,
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const safeName = (active.title || "budget").replace(/[^\w\-]+/g, "_").toLowerCase();
@@ -149,37 +242,50 @@ function BudgetApp() {
     if (files.length === 0) return;
     setImportError(null);
     try {
-      const imported: Budget[] = [];
+      const imported: BudgetRow[] = [];
+      let i = 0;
       for (const file of files) {
         const text = await file.text();
         const data = JSON.parse(text);
-        imported.push(createBudget({
-          title: typeof data.title === "string" ? data.title : file.name.replace(/\.budget\.json$|\.json$/i, ""),
+        const b = createBudget({
+          title:
+            typeof data.title === "string"
+              ? data.title
+              : file.name.replace(/\.budget\.json$|\.json$/i, ""),
           subtitle: typeof data.subtitle === "string" ? data.subtitle : "",
           income: sanitizeEntries(data.income),
           expenses: sanitizeEntries(data.expenses),
-        }));
+          order: Date.now() + i++,
+        });
+        imported.push(b);
+        await putBudget(b);
       }
-      setState((s) => ({
-        budgets: [...s.budgets, ...imported],
-        activeId: imported[imported.length - 1].id,
-      }));
+      setBudgets((arr) => [...arr, ...imported]);
+      setActiveIdState(imported[imported.length - 1].id);
     } catch {
       setImportError("Could not read that file. Please pick a valid .budget.json file.");
     }
   };
+
+  if (!loaded || !active) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground text-sm">
+        Loading…
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
       {/* Tab bar */}
       <div className="border-b border-border bg-card">
         <div className="max-w-6xl mx-auto px-6 flex items-center gap-1 overflow-x-auto">
-          {state.budgets.map((b) => {
-            const isActive = b.id === state.activeId;
+          {openBudgets.map((b) => {
+            const isActive = b.id === active.id;
             return (
               <div
                 key={b.id}
-                onClick={() => setState((s) => ({ ...s, activeId: b.id }))}
+                onClick={() => setActiveIdState(b.id)}
                 className={`group flex items-center gap-2 px-3 py-2 text-sm border-b-2 cursor-pointer whitespace-nowrap transition-colors ${
                   isActive
                     ? "border-primary text-foreground"
@@ -190,7 +296,7 @@ function BudgetApp() {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    closeBudget(b.id);
+                    requestCloseTab(b);
                   }}
                   className="opacity-60 hover:opacity-100 hover:bg-muted rounded p-0.5"
                   aria-label="Close tab"
@@ -207,6 +313,20 @@ function BudgetApp() {
           >
             <Plus className="size-4" />
           </button>
+          <div className="ml-auto">
+            <button
+              onClick={() => setArchiveOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded"
+            >
+              <Archive className="size-3.5" />
+              Archive
+              {archivedBudgets.length > 0 && (
+                <span className="ml-1 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-muted text-foreground text-[10px] font-medium">
+                  {archivedBudgets.length}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -285,7 +405,9 @@ function BudgetApp() {
               </div>
               <div className="flex items-center justify-between px-4 py-3">
                 <span className="text-sm font-medium">Income minus expenses</span>
-                <span className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}>
+                <span
+                  className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}
+                >
                   {leftover.toFixed(2)}
                 </span>
               </div>
@@ -344,14 +466,135 @@ function BudgetApp() {
         </div>
 
         <footer className="mt-10 text-center text-xs text-muted-foreground">
-          Saved automatically in your browser · Import or export to share budgets as .budget.json files
+          Saved automatically in IndexedDB · Import or export to share budgets as .budget.json files
         </footer>
       </div>
+
+      {/* Close confirmation dialog */}
+      <Dialog
+        open={!!closeTarget}
+        onOpenChange={(o) => {
+          if (!o) setCloseTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Archive this budget?</DialogTitle>
+            <DialogDescription>
+              Closing a tab archives it. Type the 6-digit code below to confirm.
+              You can restore it later from the archive.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="text-sm">
+              Budget: <span className="font-medium">{closeTarget?.title || "Untitled"}</span>
+            </div>
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-center">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                Confirmation code
+              </div>
+              <div className="text-2xl font-mono tracking-[0.4em] tabular-nums">
+                {closeCode}
+              </div>
+            </div>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="\d{6}"
+              maxLength={6}
+              autoFocus
+              value={closeInput}
+              onChange={(e) => setCloseInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              placeholder="Enter the code"
+              className="w-full text-center text-lg font-mono tracking-[0.4em] tabular-nums border border-input rounded-md px-3 py-2 bg-background outline-none focus:ring-2 focus:ring-ring"
+            />
+          </div>
+          <DialogFooter>
+            <button
+              onClick={() => setCloseTarget(null)}
+              className="inline-flex items-center gap-2 bg-card border border-border rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={confirmCloseTab}
+              disabled={closeInput !== closeCode}
+              className="inline-flex items-center gap-2 bg-destructive text-destructive-foreground rounded-md px-3 py-2 text-sm hover:bg-destructive/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Archive className="size-4" /> Archive tab
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Archive dialog */}
+      <Dialog open={archiveOpen} onOpenChange={setArchiveOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Archived budgets</DialogTitle>
+            <DialogDescription>
+              Restore an archived budget to reopen it as a tab, or permanently delete it.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto -mx-1 px-1">
+            {archivedBudgets.length === 0 ? (
+              <div className="text-sm text-muted-foreground text-center py-8">
+                No archived budgets.
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {archivedBudgets.map((b) => (
+                  <li
+                    key={b.id}
+                    className="flex items-center gap-3 border border-border rounded-md px-3 py-2"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">
+                        {b.title || "Untitled"}
+                      </div>
+                      <div className="text-xs text-muted-foreground truncate">
+                        {b.subtitle || "—"}
+                        {b.archivedAt
+                          ? ` · archived ${new Date(b.archivedAt).toLocaleDateString()}`
+                          : ""}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => restoreArchived(b)}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-border rounded hover:bg-muted"
+                    >
+                      <RotateCcw className="size-3.5" /> Restore
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm(`Permanently delete "${b.title || "Untitled"}"? This cannot be undone.`)) {
+                          void permanentlyDelete(b);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs border border-destructive/40 text-destructive rounded hover:bg-destructive/10"
+                    >
+                      <Trash2 className="size-3.5" /> Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function Stat({ label, value, colorVar }: { label: string; value: number; colorVar: string }) {
+function Stat({
+  label,
+  value,
+  colorVar,
+}: {
+  label: string;
+  value: number;
+  colorVar: string;
+}) {
   return (
     <div>
       <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
