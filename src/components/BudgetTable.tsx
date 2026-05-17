@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Trash2, Plus } from "lucide-react";
 
 export type Entry = { id: string; label: string; amount: number };
@@ -21,10 +22,21 @@ const variantClasses: Record<Variant, string> = {
 };
 
 export function BudgetTable({ title, variant, entries, onChange, totalLabel, total, readOnly }: Props) {
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+
   const updateEntry = (id: string, patch: Partial<Entry>) => {
     onChange(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
   };
-  const removeEntry = (id: string) => onChange(entries.filter((e) => e.id !== id));
+
+  const requestDelete = (id: string) => setPendingDelete(id);
+
+  const confirmDelete = (id: string) => {
+    onChange(entries.filter((e) => e.id !== id));
+    setPendingDelete(null);
+  };
+
+  const cancelDelete = () => setPendingDelete(null);
+
   const addEntry = () =>
     onChange([...entries, { id: crypto.randomUUID(), label: "", amount: 0 }]);
 
@@ -36,32 +48,54 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
       <div className="divide-y divide-border">
         {entries.map((entry) => (
           <div key={entry.id} className="group grid grid-cols-[1fr_auto_auto] items-center gap-2 px-3 py-2 hover:bg-muted/40 transition-colors">
-            <input
-              type="text"
-              value={entry.label}
-              readOnly={readOnly}
-              onChange={(e) => updateEntry(entry.id, { label: e.target.value })}
-              placeholder="Item"
-              className="bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
-            />
-            <input
-              type="number"
-              value={entry.amount === 0 ? "" : entry.amount}
-              readOnly={readOnly}
-              onChange={(e) => updateEntry(entry.id, { amount: parseFloat(e.target.value) || 0 })}
-              placeholder="0.00"
-              className="bg-transparent text-sm text-right outline-none w-24 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
-            />
-            {!readOnly ? (
-              <button
-                onClick={() => removeEntry(entry.id)}
-                className="opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-destructive p-1"
-                aria-label="Remove"
-              >
-                <Trash2 className="size-3.5" />
-              </button>
+            {pendingDelete === entry.id ? (
+              <>
+                <span className="text-sm text-muted-foreground px-2 truncate">
+                  Remove <span className="font-medium text-foreground">{entry.label || "this row"}</span>?
+                </span>
+                <button
+                  onClick={() => confirmDelete(entry.id)}
+                  className="text-xs px-2 py-1 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
+                >
+                  Remove
+                </button>
+                <button
+                  onClick={cancelDelete}
+                  className="text-xs px-2 py-1 rounded border border-border hover:bg-muted transition-colors"
+                >
+                  Cancel
+                </button>
+              </>
             ) : (
-              <span className="w-5" />
+              <>
+                <input
+                  type="text"
+                  value={entry.label}
+                  readOnly={readOnly}
+                  onChange={(e) => updateEntry(entry.id, { label: e.target.value })}
+                  placeholder="Item"
+                  className="bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                />
+                <input
+                  type="number"
+                  value={entry.amount === 0 ? "" : entry.amount}
+                  readOnly={readOnly}
+                  onChange={(e) => updateEntry(entry.id, { amount: parseFloat(e.target.value) || 0 })}
+                  placeholder="0.00"
+                  className="bg-transparent text-sm text-right outline-none w-24 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                />
+                {!readOnly ? (
+                  <button
+                    onClick={() => requestDelete(entry.id)}
+                    className="text-muted-foreground hover:text-destructive p-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity"
+                    aria-label="Remove"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                ) : (
+                  <span className="w-5" />
+                )}
+              </>
             )}
           </div>
         ))}

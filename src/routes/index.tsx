@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { Download, Upload, Plus, X, Archive, RotateCcw, Trash2 } from "lucide-react";
+import { Download, Upload, Plus, X, Archive, RotateCcw, Trash2, MoreHorizontal } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
   Dialog,
@@ -11,6 +11,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   loadAll,
   putBudget,
@@ -323,7 +329,7 @@ function BudgetApp() {
           >
             <Plus className="size-4" />
           </button>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1">
             <button
               onClick={() => setArchiveOpen(true)}
               className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded"
@@ -336,50 +342,49 @@ function BudgetApp() {
                 </span>
               )}
             </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded">
+                  <MoreHorizontal className="size-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleImportClick}>
+                  <Upload className="size-3.5 mr-2" /> Import
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={handleExport}>
+                  <Download className="size-3.5 mr-2" /> Export
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </div>
 
       <div className="max-w-6xl mx-auto px-6 py-10">
-        <header className="mb-8 flex flex-wrap items-start justify-between gap-4">
-          <div className="flex-1 min-w-0">
-            <input
-              type="text"
-              value={active.title}
-              onChange={(e) => updateActive({ title: e.target.value })}
-              placeholder="Untitled budget"
-              className="w-full bg-transparent text-4xl font-bold tracking-tight text-foreground outline-none focus:bg-card rounded px-1 -mx-1"
-            />
-            <input
-              type="text"
-              value={active.subtitle}
-              onChange={(e) => updateActive({ subtitle: e.target.value })}
-              placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
-              className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60"
-            />
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/json,.json"
-              multiple
-              onChange={handleFileChange}
-              className="hidden"
-            />
-            <button
-              onClick={handleImportClick}
-              className="inline-flex items-center gap-2 bg-card border border-border rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors"
-            >
-              <Upload className="size-4" /> Import
-            </button>
-            <button
-              onClick={handleExport}
-              className="inline-flex items-center gap-2 bg-primary text-primary-foreground rounded-md px-3 py-2 text-sm hover:bg-primary/90 transition-colors"
-            >
-              <Download className="size-4" /> Export
-            </button>
-          </div>
+        <header className="mb-8">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            multiple
+            onChange={handleFileChange}
+            className="hidden"
+          />
+          <input
+            type="text"
+            value={active.title}
+            onChange={(e) => updateActive({ title: e.target.value })}
+            placeholder="Untitled budget"
+            className="w-full bg-transparent text-4xl font-bold tracking-tight text-foreground outline-none focus:bg-card rounded px-1 -mx-1"
+          />
+          <input
+            type="text"
+            value={active.subtitle}
+            onChange={(e) => updateActive({ subtitle: e.target.value })}
+            placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
+            className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60"
+          />
         </header>
 
         {importError && (
