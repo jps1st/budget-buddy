@@ -4,7 +4,7 @@
       "name": "money-maker-sheets",
       "interpreter": "/home/node10/.nvm/versions/node/v22.22.2/bin/node",
       "script": "npm",
-      "args": "run preview",
+      "args": "run start",
       "cwd": ".",
       "instances": 1,
       "exec_mode": "fork",

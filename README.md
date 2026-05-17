@@ -1,6 +1,6 @@
 # Money Maker Sheets
 
-A TanStack Start SSR application with React, Tailwind CSS, and shadcn/ui components. Supports two deployment targets: **Cloudflare Workers** (primary) and a **traditional Node.js server** via `vite preview` + PM2.
+A TanStack Start SSR application with React, Tailwind CSS, and shadcn/ui components. Supports two deployment targets: **Cloudflare Workers** (primary) and a **self-hosted server** via `wrangler dev` + PM2.
 
 ---
 
@@ -76,9 +76,11 @@ wrangler deploy --env production
 
 ---
 
-### Option B — Traditional Node.js Server (PM2)
+### Option B — Self-hosted Server (PM2 + Wrangler)
 
 Use this if you need to host on a VPS or bare-metal server instead of Cloudflare.
+
+> **Note:** Because this app targets the Cloudflare Workers runtime, `wrangler dev` is used to run the Workers bundle locally via Miniflare. `vite preview` will **not** work — it expects a Node.js server bundle that this build does not produce.
 
 **1. Install dependencies and build**
 
@@ -93,7 +95,7 @@ npm run build
 pm2 start ecosystem.config.json --env production
 ```
 
-This runs `npm run preview` (Vite's production preview server) on port `4173`.
+This runs `wrangler dev --port 4173 --host 0.0.0.0`, serving the built Workers bundle on port `4173`.
 
 **Useful PM2 commands**
 
@@ -107,12 +109,12 @@ pm2 save                          # persist process list across reboots
 pm2 startup                       # generate startup script for the OS
 ```
 
-**Expose a custom port**
+**Change the port**
 
-Edit `ecosystem.config.json` → `env_production.PORT`, then also pass `--port` to the preview script by updating `package.json`:
+Edit `--port` in the `preview` script in `package.json`:
 
 ```json
-"preview": "vite preview --port 4173 --host 0.0.0.0"
+"preview": "wrangler dev --port 4173 --host 0.0.0.0"
 ```
 
 ---
