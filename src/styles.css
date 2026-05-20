@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Source+Code+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
 @import "tailwindcss" source(none);
 @source "../src";
 @import "tw-animate-css";
@@ -75,5 +76,5 @@
 
 @layer base {
   * { border-color: var(--color-border); }
-  body { background-color: var(--color-background); color: var(--color-foreground); font-feature-settings: "tnum"; }
+  body { background-color: var(--color-background); color: var(--color-foreground); font-family: 'Source Code Pro', monospace; font-feature-settings: "tnum"; letter-spacing: -0.04em; }
 }
