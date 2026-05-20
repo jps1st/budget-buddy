@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { Download, Upload, Plus, Archive, RotateCcw, Trash2, MoreHorizontal, Copy } from "lucide-react";
+import { Download, Upload, Plus, Archive, RotateCcw, Trash2, MoreHorizontal, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
   Dialog,
@@ -15,6 +15,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -99,21 +100,6 @@ function BudgetApp() {
   const [archiveOpen, setArchiveOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Tab drag-to-reorder state
-  const [dragTabId, setDragTabId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetIdState] = useState<string | null>(null);
-  const dropTargetIdRef = useRef<string | null>(null);
-  const openBudgetsRef = useRef<BudgetRow[]>([]);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressStartPos = useRef<{ x: number; y: number } | null>(null);
-  const isDraggingRef = useRef(false);
-  const wasDraggingRef = useRef(false);
-
-  const setDropTargetId = (id: string | null) => {
-    dropTargetIdRef.current = id;
-    setDropTargetIdState(id);
-  };
-
   // Load from IDB on mount
   useEffect(() => {
     (async () => {
@@ -168,92 +154,17 @@ function BudgetApp() {
     persistRow(updated);
   };
 
-  // Keep openBudgetsRef in sync for drag handlers
-  useEffect(() => { openBudgetsRef.current = openBudgets; }, [openBudgets]);
-
-  // Global pointer listeners while a tab drag is active
-  useEffect(() => {
-    if (!dragTabId) return;
-
-    const handleMove = (e: PointerEvent) => {
-      e.preventDefault();
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      const tabEl = el?.closest("[data-tab-id]") as HTMLElement | null;
-      setDropTargetId(tabEl?.dataset.tabId ?? null);
-    };
-
-    const handleUp = async () => {
-      const srcId = dragTabId;
-      const dstId = dropTargetIdRef.current;
-      setDragTabId(null);
-      setDropTargetId(null);
-      isDraggingRef.current = false;
-      wasDraggingRef.current = true;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-
-      if (dstId && srcId !== dstId) {
-        const tabs = openBudgetsRef.current;
-        const srcIdx = tabs.findIndex((b) => b.id === srcId);
-        const dstIdx = tabs.findIndex((b) => b.id === dstId);
-        if (srcIdx !== -1 && dstIdx !== -1) {
-          const next = [...tabs];
-          const [moved] = next.splice(srcIdx, 1);
-          next.splice(dstIdx, 0, moved);
-          const base = Date.now();
-          const updated = next.map((b, i) => ({ ...b, order: base + i }));
-          setBudgets((arr) => arr.map((b) => updated.find((u) => u.id === b.id) ?? b));
-          await Promise.all(updated.map(putBudget));
-        }
-      }
-    };
-
-    document.body.style.cursor = "grabbing";
-    document.body.style.userSelect = "none";
-    document.addEventListener("pointermove", handleMove, { passive: false });
-    document.addEventListener("pointerup", handleUp);
-
-    return () => {
-      document.removeEventListener("pointermove", handleMove);
-      document.removeEventListener("pointerup", handleUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-  }, [dragTabId]);
-
-  const handleTabPointerDown = (e: React.PointerEvent, tabId: string) => {
-    longPressStartPos.current = { x: e.clientX, y: e.clientY };
-    longPressTimerRef.current = setTimeout(() => {
-      longPressTimerRef.current = null;
-      setDragTabId(tabId);
-      isDraggingRef.current = true;
-      navigator.vibrate?.(50);
-    }, 450);
-  };
-
-  const handleTabPointerMove = (e: React.PointerEvent) => {
-    if (!longPressTimerRef.current || !longPressStartPos.current) return;
-    const dx = e.clientX - longPressStartPos.current.x;
-    const dy = e.clientY - longPressStartPos.current.y;
-    if (dx * dx + dy * dy > 25) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  };
-
-  const handleTabPointerUp = () => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  };
-
-  const handleTabClick = (tabId: string) => {
-    if (isDraggingRef.current || wasDraggingRef.current) {
-      wasDraggingRef.current = false;
-      return;
-    }
-    setActiveIdState(tabId);
+  const moveTab = async (id: string, direction: -1 | 1) => {
+    const idx = openBudgets.findIndex((b) => b.id === id);
+    const newIdx = idx + direction;
+    if (idx === -1 || newIdx < 0 || newIdx >= openBudgets.length) return;
+    const next = [...openBudgets];
+    const [moved] = next.splice(idx, 1);
+    next.splice(newIdx, 0, moved);
+    const base = Date.now();
+    const updated = next.map((b, i) => ({ ...b, order: base + i }));
+    setBudgets((arr) => arr.map((b) => updated.find((u) => u.id === b.id) ?? b));
+    await Promise.all(updated.map(putBudget));
   };
 
   const addBudget = (b: BudgetRow) => {
@@ -411,68 +322,55 @@ function BudgetApp() {
       {/* Tab bar */}
       <div className="border-b border-border bg-card">
         <div className="max-w-6xl mx-auto px-6 flex items-center gap-1 overflow-x-auto">
-          {openBudgets.map((b) => {
+          {openBudgets.map((b, idx) => {
             const isActive = b.id === active.id;
-            const isDraggingThis = dragTabId === b.id;
-            const isDropTarget = dropTargetId === b.id && dragTabId !== b.id;
             return (
               <div
                 key={b.id}
-                data-tab-id={b.id}
-                onClick={() => handleTabClick(b.id)}
-                onPointerDown={(e) => {
-                  if ((e.target as HTMLElement).closest("[data-tab-menu]")) return;
-                  handleTabPointerDown(e, b.id);
-                }}
-                onPointerMove={handleTabPointerMove}
-                onPointerUp={handleTabPointerUp}
-                onPointerCancel={handleTabPointerUp}
-                onContextMenu={(e) => e.preventDefault()}
-                className={[
-                  "group flex items-center gap-1 px-3 py-2 text-sm border-b-2 whitespace-nowrap transition-colors select-none",
+                onClick={() => setActiveIdState(b.id)}
+                className={`group flex items-center gap-1 px-3 py-2 text-sm border-b-2 cursor-pointer whitespace-nowrap transition-colors ${
                   isActive
                     ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground",
-                  isDraggingThis ? "opacity-40" : "",
-                  isDropTarget ? "bg-primary/10 rounded-t" : "",
-                  dragTabId ? "cursor-grab" : "cursor-pointer",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
+                    : "border-transparent text-muted-foreground hover:text-foreground"
+                }`}
               >
                 <span className="max-w-[160px] truncate">{b.title || "Untitled"}</span>
-                <div data-tab-menu="" className="flex-shrink-0">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        onClick={(e) => e.stopPropagation()}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
-                        aria-label="Tab options"
-                      >
-                        <MoreHorizontal className="size-3.5" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          duplicateTab(b);
-                        }}
-                      >
-                        <Copy className="size-3.5 mr-2" /> Duplicate
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          requestCloseTab(b);
-                        }}
-                      >
-                        <Archive className="size-3.5 mr-2" /> Archive
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      onClick={(e) => e.stopPropagation()}
+                      className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
+                      aria-label="Tab options"
+                    >
+                      <MoreHorizontal className="size-3.5" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuItem
+                      disabled={idx === 0}
+                      onClick={(e) => { e.stopPropagation(); void moveTab(b.id, -1); }}
+                    >
+                      <ChevronLeft className="size-3.5 mr-2" /> Move left
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={idx === openBudgets.length - 1}
+                      onClick={(e) => { e.stopPropagation(); void moveTab(b.id, 1); }}
+                    >
+                      <ChevronRight className="size-3.5 mr-2" /> Move right
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={(e) => { e.stopPropagation(); duplicateTab(b); }}
+                    >
+                      <Copy className="size-3.5 mr-2" /> Duplicate
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={(e) => { e.stopPropagation(); requestCloseTab(b); }}
+                    >
+                      <Archive className="size-3.5 mr-2" /> Archive
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             );
           })}
