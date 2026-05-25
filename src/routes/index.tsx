@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { Download, Upload, Plus, Archive, RotateCcw, Trash2, MoreHorizontal, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Download, Upload, Plus, Archive, RotateCcw, Trash2, MoreHorizontal, Copy, ChevronUp, ChevronDown, Menu, X } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
   Dialog,
@@ -93,6 +93,7 @@ function BudgetApp() {
   const [budgets, setBudgets] = useState<BudgetRow[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [importError, setImportError] = useState<string | null>(null);
   const [closeTarget, setCloseTarget] = useState<BudgetRow | null>(null);
   const [closeCode, setCloseCode] = useState("");
@@ -154,7 +155,7 @@ function BudgetApp() {
     persistRow(updated);
   };
 
-  const moveTab = async (id: string, direction: -1 | 1) => {
+  const moveTab = async (id: string, direction: -1 | 1) => { // -1 = up, 1 = down
     const idx = openBudgets.findIndex((b) => b.id === id);
     const newIdx = idx + direction;
     if (idx === -1 || newIdx < 0 || newIdx >= openBudgets.length) return;
@@ -318,100 +319,132 @@ function BudgetApp() {
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Tab bar */}
-      <div className="border-b border-border bg-card">
-        <div className="max-w-6xl mx-auto px-6 flex items-center gap-1 overflow-x-auto">
-          {openBudgets.map((b, idx) => {
-            const isActive = b.id === active.id;
-            return (
-              <div
-                key={b.id}
-                onClick={() => setActiveIdState(b.id)}
-                className={`group flex items-center gap-1 px-3 py-2 text-sm border-b-2 cursor-pointer whitespace-nowrap transition-colors ${
-                  isActive
-                    ? "border-primary text-foreground"
-                    : "border-transparent text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <span className="max-w-[160px] truncate">{b.title || "Untitled"}</span>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      onClick={(e) => e.stopPropagation()}
-                      className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
-                      aria-label="Tab options"
-                    >
-                      <MoreHorizontal className="size-3.5" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    <DropdownMenuItem
-                      disabled={idx === 0}
-                      onClick={(e) => { e.stopPropagation(); void moveTab(b.id, -1); }}
-                    >
-                      <ChevronLeft className="size-3.5 mr-2" /> Move left
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={idx === openBudgets.length - 1}
-                      onClick={(e) => { e.stopPropagation(); void moveTab(b.id, 1); }}
-                    >
-                      <ChevronRight className="size-3.5 mr-2" /> Move right
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={(e) => { e.stopPropagation(); duplicateTab(b); }}
-                    >
-                      <Copy className="size-3.5 mr-2" /> Duplicate
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={(e) => { e.stopPropagation(); requestCloseTab(b); }}
-                    >
-                      <Archive className="size-3.5 mr-2" /> Archive
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            );
-          })}
-          <button
-            onClick={newBudget}
-            className="ml-1 p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded"
-            aria-label="New budget"
-          >
-            <Plus className="size-4" />
-          </button>
-          <div className="ml-auto flex items-center gap-1">
+    <div className="min-h-screen bg-background flex">
+      {/* Backdrop - mobile only, closes sidebar on tap */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/30 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      {sidebarOpen && (
+        <aside className="fixed top-0 left-0 h-full z-50 w-56 border-r border-border bg-card flex flex-col lg:sticky lg:h-screen lg:shrink-0">
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Budgets</span>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              aria-label="Close sidebar"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+
+          <nav className="flex-1 overflow-y-auto py-1">
+            {openBudgets.map((b, idx) => {
+              const isActive = b.id === active.id;
+              return (
+                <div
+                  key={b.id}
+                  onClick={() => setActiveIdState(b.id)}
+                  className={`group flex items-center gap-1 px-2 py-1.5 mx-1 rounded cursor-pointer transition-colors ${
+                    isActive
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                  }`}
+                >
+                  <span className="flex-1 text-sm truncate">{b.title || "Untitled"}</span>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        onClick={(e) => e.stopPropagation()}
+                        className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
+                        aria-label="Budget options"
+                      >
+                        <MoreHorizontal className="size-3.5" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuItem
+                        disabled={idx === 0}
+                        onClick={(e) => { e.stopPropagation(); void moveTab(b.id, -1); }}
+                      >
+                        <ChevronUp className="size-3.5 mr-2" /> Move up
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={idx === openBudgets.length - 1}
+                        onClick={(e) => { e.stopPropagation(); void moveTab(b.id, 1); }}
+                      >
+                        <ChevronDown className="size-3.5 mr-2" /> Move down
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); duplicateTab(b); }}
+                      >
+                        <Copy className="size-3.5 mr-2" /> Duplicate
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onClick={(e) => { e.stopPropagation(); requestCloseTab(b); }}
+                      >
+                        <Archive className="size-3.5 mr-2" /> Archive
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              );
+            })}
+          </nav>
+
+          <div className="border-t border-border p-2 space-y-0.5">
+            <button
+              onClick={newBudget}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+            >
+              <Plus className="size-4" /> New budget
+            </button>
             <button
               onClick={() => setArchiveOpen(true)}
-              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded"
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
             >
-              <Archive className="size-3.5" />
+              <Archive className="size-4" />
               Archive
               {archivedBudgets.length > 0 && (
-                <span className="ml-1 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-muted text-foreground text-[10px] font-medium">
+                <span className="ml-auto inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-muted text-foreground text-[10px] font-medium">
                   {archivedBudgets.length}
                 </span>
               )}
             </button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded">
-                  <MoreHorizontal className="size-3.5" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={handleImportClick}>
-                  <Upload className="size-3.5 mr-2" /> Import
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleExport}>
-                  <Download className="size-3.5 mr-2" /> Export
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <button
+              onClick={handleImportClick}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+            >
+              <Upload className="size-4" /> Import
+            </button>
+            <button
+              onClick={handleExport}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+            >
+              <Download className="size-4" /> Export
+            </button>
           </div>
-        </div>
-      </div>
+        </aside>
+      )}
+
+      {/* Main content */}
+      <div className="flex-1 min-w-0">
+        {!sidebarOpen && (
+          <div className="border-b border-border bg-card px-4 py-2">
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              aria-label="Open sidebar"
+            >
+              <Menu className="size-4" />
+            </button>
+          </div>
+        )}
 
       <div className="max-w-6xl mx-auto px-6 py-10">
         <header className="mb-8">
@@ -535,6 +568,7 @@ function BudgetApp() {
         <footer className="mt-10 text-center text-xs text-muted-foreground">
           Saved automatically in IndexedDB · Import or export to share budgets as .budget.json files
         </footer>
+      </div>
       </div>
 
       {/* Close confirmation dialog */}
