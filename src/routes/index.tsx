@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { Download, Upload, Plus, Archive, RotateCcw, Trash2, MoreHorizontal, Copy, ChevronUp, ChevronDown, Menu, X } from "lucide-react";
+import { Download, Upload, Plus, Archive, RotateCcw, Trash2, MoreHorizontal, Copy, ChevronUp, ChevronDown, Menu, X, Undo2, Redo2 } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
   Dialog,
@@ -25,6 +25,7 @@ import {
   getMeta,
   setActiveId as persistActiveId,
   type BudgetRow,
+  type BudgetSnapshot,
 } from "@/lib/budget-storage";
 
 function uuid(): string {
@@ -100,6 +101,12 @@ function BudgetApp() {
   const [closeInput, setCloseInput] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const budgetsRef = useRef<BudgetRow[]>([]);
+  const burstSnapRef = useRef<BudgetSnapshot | null>(null);
+  const burstTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const burstBudgetIdRef = useRef<string | null>(null);
+  const undoRef = useRef<() => void>(() => {});
+  const redoRef = useRef<() => void>(() => {});
 
   // Load from IDB on mount
   useEffect(() => {
@@ -144,16 +151,145 @@ function BudgetApp() {
     if (loaded) persistActiveId(active?.id ?? null);
   }, [active?.id, loaded]);
 
+  // Keep budgets ref in sync for use inside timers
+  useEffect(() => { budgetsRef.current = budgets; }, [budgets]);
+
   const persistRow = (row: BudgetRow) => {
     void putBudget(row);
   };
 
-  const updateActive = (patch: Partial<BudgetRow>) => {
+  const snapOf = (b: BudgetRow): BudgetSnapshot => ({
+    title: b.title, subtitle: b.subtitle, income: b.income, expenses: b.expenses,
+  });
+
+  const BURST_MS = 600;
+
+  const updateActive = (patch: Partial<BudgetRow>, immediate = false) => {
     if (!active) return;
-    const updated: BudgetRow = { ...active, ...patch, updatedAt: Date.now() };
-    setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
-    persistRow(updated);
+
+    if (immediate) {
+      // Cancel pending burst and use its pre-burst snapshot (or current state)
+      if (burstTimerRef.current) { clearTimeout(burstTimerRef.current); burstTimerRef.current = null; }
+      const snapToPush = burstSnapRef.current ?? snapOf(active);
+      burstSnapRef.current = null;
+      burstBudgetIdRef.current = null;
+
+      const updated: BudgetRow = {
+        ...active,
+        ...patch,
+        undoStack: [...(active.undoStack ?? []), snapToPush].slice(-16),
+        redoStack: [],
+        updatedAt: Date.now(),
+      };
+      setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+      persistRow(updated);
+    } else {
+      // Save the pre-burst snapshot on the first change of a new burst
+      if (!burstSnapRef.current || burstBudgetIdRef.current !== active.id) {
+        burstSnapRef.current = snapOf(active);
+        burstBudgetIdRef.current = active.id;
+      }
+
+      // Reset burst timer — commit snapshot to history after quiet period
+      if (burstTimerRef.current) clearTimeout(burstTimerRef.current);
+      const budgetId = active.id;
+      burstTimerRef.current = setTimeout(() => {
+        burstTimerRef.current = null;
+        const snap = burstSnapRef.current;
+        burstSnapRef.current = null;
+        burstBudgetIdRef.current = null;
+        if (!snap) return;
+        const latest = budgetsRef.current.find((b) => b.id === budgetId);
+        if (!latest) return;
+        const committed: BudgetRow = {
+          ...latest,
+          undoStack: [...(latest.undoStack ?? []), snap].slice(-16),
+          redoStack: [],
+        };
+        setBudgets((arr) => arr.map((b) => (b.id === budgetId ? committed : b)));
+        void putBudget(committed);
+      }, BURST_MS);
+
+      // Apply the change immediately; clear redo so it can't be re-applied
+      const updated: BudgetRow = { ...active, ...patch, redoStack: [], updatedAt: Date.now() };
+      setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+      persistRow(updated);
+    }
   };
+
+  const undo = () => {
+    // Cancel pending burst — restore to pre-burst state
+    if (burstTimerRef.current) { clearTimeout(burstTimerRef.current); burstTimerRef.current = null; }
+    const burstSnap = burstSnapRef.current;
+    burstSnapRef.current = null;
+    burstBudgetIdRef.current = null;
+
+    const a = budgetsRef.current.find((b) => b.id === activeId && !b.archived)
+      ?? budgetsRef.current.filter((b) => !b.archived).sort((x, y) => x.order - y.order)[0]
+      ?? null;
+    if (!a) return;
+
+    if (burstSnap) {
+      // Undo the uncommitted burst — don't touch the undo/redo stacks
+      const restored: BudgetRow = { ...a, ...burstSnap, updatedAt: Date.now() };
+      setBudgets((arr) => arr.map((b) => (b.id === restored.id ? restored : b)));
+      persistRow(restored);
+      return;
+    }
+
+    const undoStack = a.undoStack ?? [];
+    if (!undoStack.length) return;
+    const prev = undoStack[undoStack.length - 1];
+    const restored: BudgetRow = {
+      ...a,
+      ...prev,
+      undoStack: undoStack.slice(0, -1),
+      redoStack: [...(a.redoStack ?? []), snapOf(a)].slice(-16),
+      updatedAt: Date.now(),
+    };
+    setBudgets((arr) => arr.map((b) => (b.id === restored.id ? restored : b)));
+    persistRow(restored);
+  };
+
+  const redo = () => {
+    // Discard any pending burst on redo
+    if (burstTimerRef.current) { clearTimeout(burstTimerRef.current); burstTimerRef.current = null; }
+    burstSnapRef.current = null;
+    burstBudgetIdRef.current = null;
+
+    const a = budgetsRef.current.find((b) => b.id === activeId && !b.archived)
+      ?? budgetsRef.current.filter((b) => !b.archived).sort((x, y) => x.order - y.order)[0]
+      ?? null;
+    if (!a) return;
+
+    const redoStack = a.redoStack ?? [];
+    if (!redoStack.length) return;
+    const next = redoStack[redoStack.length - 1];
+    const restored: BudgetRow = {
+      ...a,
+      ...next,
+      undoStack: [...(a.undoStack ?? []), snapOf(a)].slice(-16),
+      redoStack: redoStack.slice(0, -1),
+      updatedAt: Date.now(),
+    };
+    setBudgets((arr) => arr.map((b) => (b.id === restored.id ? restored : b)));
+    persistRow(restored);
+  };
+
+  // Update stable refs each render so the keyboard handler always calls the latest versions
+  undoRef.current = undo;
+  redoRef.current = redo;
+
+  // Keyboard shortcuts — registered once, uses refs to avoid stale closures
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undoRef.current(); }
+      if (e.key === "y" || (e.key === "z" && e.shiftKey)) { e.preventDefault(); redoRef.current(); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   const moveTab = async (id: string, direction: -1 | 1) => { // -1 = up, 1 = down
     const idx = openBudgets.findIndex((b) => b.id === id);
@@ -470,6 +606,31 @@ function BudgetApp() {
             placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
             className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60"
           />
+          <div className="mt-2 flex items-center gap-1">
+            <button
+              onClick={undo}
+              disabled={!active.undoStack?.length}
+              className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Undo (Ctrl+Z)"
+              aria-label="Undo"
+            >
+              <Undo2 className="size-4" />
+            </button>
+            <button
+              onClick={redo}
+              disabled={!active.redoStack?.length}
+              className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              title="Redo (Ctrl+Y)"
+              aria-label="Redo"
+            >
+              <Redo2 className="size-4" />
+            </button>
+            {(active.undoStack?.length ?? 0) > 0 && (
+              <span className="text-xs text-muted-foreground/60 ml-1">
+                {active.undoStack!.length} / 16
+              </span>
+            )}
+          </div>
         </header>
 
         {importError && (
@@ -484,7 +645,7 @@ function BudgetApp() {
               title="Money In"
               variant="income"
               entries={active.income}
-              onChange={(income) => updateActive({ income })}
+              onChange={(income, immediate) => updateActive({ income }, immediate)}
               totalLabel="Total income"
               total={totalIncome}
             />
@@ -492,7 +653,7 @@ function BudgetApp() {
               title="Money Out"
               variant="expense"
               entries={active.expenses}
-              onChange={(expenses) => updateActive({ expenses })}
+              onChange={(expenses, immediate) => updateActive({ expenses }, immediate)}
               totalLabel="Total expenses"
               total={totalExpenses}
             />

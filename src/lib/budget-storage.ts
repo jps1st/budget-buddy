@@ -1,6 +1,13 @@
 import { openDB, type IDBPDatabase } from "idb";
 import type { Entry } from "@/components/BudgetTable";
 
+export type BudgetSnapshot = {
+  title: string;
+  subtitle: string;
+  income: Entry[];
+  expenses: Entry[];
+};
+
 export type BudgetRow = {
   id: string;
   title: string;
@@ -11,6 +18,8 @@ export type BudgetRow = {
   archivedAt?: number;
   updatedAt: number;
   order: number;
+  undoStack?: BudgetSnapshot[];
+  redoStack?: BudgetSnapshot[];
 };
 
 export interface Meta {

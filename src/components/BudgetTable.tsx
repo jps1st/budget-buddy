@@ -9,7 +9,7 @@ interface Props {
   title: string;
   variant: Variant;
   entries: Entry[];
-  onChange: (entries: Entry[]) => void;
+  onChange: (entries: Entry[], immediate?: boolean) => void;
   totalLabel: string;
   total: number;
   readOnly?: boolean;
@@ -31,14 +31,14 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
   const requestDelete = (id: string) => setPendingDelete(id);
 
   const confirmDelete = (id: string) => {
-    onChange(entries.filter((e) => e.id !== id));
+    onChange(entries.filter((e) => e.id !== id), true);
     setPendingDelete(null);
   };
 
   const cancelDelete = () => setPendingDelete(null);
 
   const addEntry = () =>
-    onChange([...entries, { id: crypto.randomUUID(), label: "", amount: 0 }]);
+    onChange([...entries, { id: crypto.randomUUID(), label: "", amount: 0 }], true);
 
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
