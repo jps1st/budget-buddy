@@ -606,31 +606,6 @@ function BudgetApp() {
             placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
             className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60"
           />
-          <div className="mt-2 flex items-center gap-1">
-            <button
-              onClick={undo}
-              disabled={!active.undoStack?.length}
-              className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              title="Undo (Ctrl+Z)"
-              aria-label="Undo"
-            >
-              <Undo2 className="size-4" />
-            </button>
-            <button
-              onClick={redo}
-              disabled={!active.redoStack?.length}
-              className="p-1.5 rounded text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              title="Redo (Ctrl+Y)"
-              aria-label="Redo"
-            >
-              <Redo2 className="size-4" />
-            </button>
-            {(active.undoStack?.length ?? 0) > 0 && (
-              <span className="text-xs text-muted-foreground/60 ml-1">
-                {active.undoStack!.length} / 16
-              </span>
-            )}
-          </div>
         </header>
 
         {importError && (
@@ -730,6 +705,31 @@ function BudgetApp() {
           Saved automatically in IndexedDB · Import or export to share budgets as .budget.json files
         </footer>
       </div>
+      </div>
+
+      {/* Floating undo/redo bar */}
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 rounded-full border border-border bg-card/90 backdrop-blur-sm shadow-lg px-2 py-1.5">
+        <button
+          onClick={undo}
+          disabled={!active.undoStack?.length}
+          className="p-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          title="Undo (Ctrl+Z)"
+          aria-label="Undo"
+        >
+          <Undo2 className="size-4" />
+        </button>
+        <span className="text-xs text-muted-foreground/60 w-10 text-center tabular-nums select-none">
+          {active.undoStack?.length ?? 0} / 16
+        </span>
+        <button
+          onClick={redo}
+          disabled={!active.redoStack?.length}
+          className="p-2 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          title="Redo (Ctrl+Y)"
+          aria-label="Redo"
+        >
+          <Redo2 className="size-4" />
+        </button>
       </div>
 
       {/* Close confirmation dialog */}
