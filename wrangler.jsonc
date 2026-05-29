@@ -3,5 +3,8 @@
   "name": "tanstack-start-app",
   "compatibility_date": "2025-09-24",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "src/server.ts",
+  "main": "src/server.ts"
+  // Cloudflare deployment is not active — server runs on Node.js with SQLite.
+  // To re-enable: set cloudflare: true in vite.config.ts, rewrite src/server.ts
+  // to use Cloudflare Workers format + D1, and add d1_databases binding here.
 }

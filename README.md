@@ -6,12 +6,27 @@ A TanStack Start SSR application with React, Tailwind CSS, and shadcn/ui compone
 
 ## Prerequisites
 
-- Node.js >= 18 and npm
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/) (for Cloudflare deployment)
-- [PM2](https://pm2.keymetrics.io/) (for traditional server deployment)
+- Node.js >= 22 and npm (`node:sqlite` is required for the sync backend)
+- [PM2](https://pm2.keymetrics.io/) (for production server deployment)
 
 ```bash
-npm install -g wrangler pm2
+npm install -g pm2
+```
+
+---
+
+## Quick Start
+
+Run the setup script — it installs dependencies, creates/migrates the D1 database, and builds the app:
+
+```bash
+npm run setup
+```
+
+Then start the dev server:
+
+```bash
+npm run dev
 ```
 
 ---
@@ -45,44 +60,17 @@ npm run build:dev
 
 ## Deployment
 
-### Option A — Cloudflare Workers (recommended)
+### Deployment — Self-hosted Server (Node.js + PM2)
 
-This is the primary deployment target. The app runs as a Worker at the edge.
-
-**1. Authenticate with Cloudflare**
-
-```bash
-wrangler login
-```
-
-**2. Build and deploy**
-
-```bash
-npm run build
-wrangler deploy
-```
-
-The app name and compatibility settings are defined in `wrangler.jsonc`. Change the `name` field there to match your desired Worker name.
-
-**Environment-specific deployments** (if you add environments to `wrangler.jsonc`):
-
-```bash
-# staging
-wrangler deploy --env staging
-
-# production
-wrangler deploy --env production
-```
-
----
-
-### Option B — Self-hosted Server (PM2 + Wrangler)
-
-Use this if you need to host on a VPS or bare-metal server instead of Cloudflare.
-
-> **Note:** Because this app targets the Cloudflare Workers runtime, `wrangler dev` is used to run the Workers bundle locally via Miniflare. `vite preview` will **not** work — it expects a Node.js server bundle that this build does not produce.
+The app runs as a Node.js HTTP server. No Cloudflare account or wrangler required.
 
 **1. Install dependencies and build**
+
+```bash
+npm run setup
+```
+
+Or manually:
 
 ```bash
 npm install
@@ -95,27 +83,39 @@ npm run build
 pm2 start ecosystem.config.json --env production
 ```
 
-This runs `wrangler dev --port 4173 --host 0.0.0.0`, serving the built Workers bundle on port `4173`.
+This runs `node dist/server/server.js` on port `4173`. The SQLite database is created automatically at `data/budget-sync.db`.
 
 **Useful PM2 commands**
 
 ```bash
-pm2 list                          # view running processes
-pm2 logs money-maker-sheets       # tail logs
-pm2 restart money-maker-sheets    # restart the process
-pm2 stop money-maker-sheets       # stop the process
-pm2 delete money-maker-sheets     # remove from PM2
-pm2 save                          # persist process list across reboots
-pm2 startup                       # generate startup script for the OS
+pm2 list                  # view running processes
+pm2 logs budget           # tail logs
+pm2 restart budget        # restart the process
+pm2 stop budget           # stop the process
+pm2 delete budget         # remove from PM2
+pm2 save                  # persist process list across reboots
+pm2 startup               # generate startup script for the OS
 ```
 
 **Change the port**
 
-Edit `--port` in the `preview` script in `package.json`:
+Edit `PORT` in `ecosystem.config.json` under `env_production`, or set the `PORT` environment variable before starting.
 
-```json
-"preview": "wrangler dev --port 4173 --host 0.0.0.0"
-```
+---
+
+## Online Sync (SQLite)
+
+Budget data can be synced across devices and shared via 8-character codes. The server uses Node.js's built-in `node:sqlite` — no external database required. The database file is created automatically at `data/budget-sync.db` on first run.
+
+**Requirements:** Node.js >= 22 (ships `node:sqlite` as a built-in).
+
+**How it works**
+
+- Each browser gets a persistent device ID stored in IndexedDB.
+- Owned budgets sync automatically (3-second debounce after changes).
+- Share a budget via an 8-character code; the owner controls read/write access per device.
+- Shared budgets are opened by entering the code — they sync separately from owned budgets.
+- The sync status icon (top-right) shows idle / syncing / synced / offline states.
 
 ---
 
@@ -142,10 +142,10 @@ wrangler secret put MY_SECRET
 
 | Command | Description |
 |---|---|
+| `npm run setup` | First-time setup: install dependencies and build |
 | `npm run dev` | Start development server |
 | `npm run build` | Production build |
 | `npm run build:dev` | Development build |
-| `npm run preview` | Serve the production build locally |
+| `npm run preview` | Serve the production build locally (`node dist/server/server.js`) |
 | `npm run lint` | Run ESLint |
 | `npm run format` | Format with Prettier |
-| `wrangler deploy` | Deploy to Cloudflare Workers |

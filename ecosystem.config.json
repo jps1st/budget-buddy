@@ -2,9 +2,7 @@
   "apps": [
     {
       "name": "budget",
-      "interpreter": "/home/node10/.nvm/versions/node/v22.22.2/bin/node",
-      "script": "npm",
-      "args": "run start",
+      "script": "dist/server/server.js",
       "cwd": ".",
       "instances": 1,
       "exec_mode": "fork",

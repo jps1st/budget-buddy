@@ -4,10 +4,11 @@
   "sideEffects": false,
   "type": "module",
   "scripts": {
+    "setup": "bash setup.sh",
     "dev": "vite dev",
     "build": "vite build",
     "build:dev": "vite build --mode development",
-    "preview": "wrangler dev --port 4173 --host 0.0.0.0",
+    "preview": "node dist/server/server.js",
     "start": "npm run preview",
     "lint": "eslint .",
     "format": "prettier --write ."

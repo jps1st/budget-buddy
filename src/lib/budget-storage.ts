@@ -8,6 +8,12 @@ export type BudgetSnapshot = {
   expenses: Entry[];
 };
 
+export type SyncSource = {
+  shareCode: string;
+  remoteBudgetId: string;
+  canWrite: boolean;
+};
+
 export type BudgetRow = {
   id: string;
   title: string;
@@ -18,6 +24,8 @@ export type BudgetRow = {
   archivedAt?: number;
   updatedAt: number;
   order: number;
+  shareCode?: string;      // set by owner when sharing is enabled
+  syncSource?: SyncSource; // set for budgets fetched via share code
   undoStack?: BudgetSnapshot[];
   redoStack?: BudgetSnapshot[];
 };
@@ -75,4 +83,20 @@ export async function getMeta(): Promise<Meta> {
 export async function setActiveId(activeId: string | null): Promise<void> {
   const db = await getDB();
   await db.put(STORE_META, activeId, "activeId");
+}
+
+export async function getDeviceId(): Promise<string> {
+  const db = await getDB();
+  let id = (await db.get(STORE_META, "deviceId")) as string | undefined;
+  if (!id) {
+    id =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+            const r = (Math.random() * 16) | 0;
+            return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+          });
+    await db.put(STORE_META, id, "deviceId");
+  }
+  return id;
 }

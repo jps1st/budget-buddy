@@ -1,7 +1,30 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
-import { Download, Upload, Plus, Archive, RotateCcw, Trash2, MoreHorizontal, Copy, ChevronUp, ChevronDown, Menu, X, Undo2, Redo2 } from "lucide-react";
+import {
+  Download,
+  Upload,
+  Plus,
+  Archive,
+  RotateCcw,
+  Trash2,
+  MoreHorizontal,
+  Copy,
+  ChevronUp,
+  ChevronDown,
+  Menu,
+  X,
+  Undo2,
+  Redo2,
+  Cloud,
+  CloudOff,
+  Share2,
+  Link2,
+  ShieldCheck,
+  Info,
+  Loader2,
+  Check,
+} from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
   Dialog,
@@ -24,9 +47,22 @@ import {
   deleteBudget,
   getMeta,
   setActiveId as persistActiveId,
+  getDeviceId,
   type BudgetRow,
   type BudgetSnapshot,
+  type SyncSource,
 } from "@/lib/budget-storage";
+import {
+  syncOwnedBudgets,
+  generateShareCode,
+  disableShareCode,
+  fetchSharedBudget,
+  updateSharedBudget,
+  getPermissions,
+  grantPermission,
+  revokePermission,
+  type Permission,
+} from "@/lib/sync-api";
 
 function uuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -90,6 +126,52 @@ function gen6() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+function serializeForSync(b: BudgetRow): string {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { undoStack: _u, redoStack: _r, syncSource: _s, ...rest } = b;
+  return JSON.stringify(rest);
+}
+
+function deserializeFromSync(
+  id: string,
+  data: string,
+  updatedAt: number,
+  shareCode: string | null,
+): BudgetRow {
+  let parsed: Partial<BudgetRow> = {};
+  try {
+    parsed = JSON.parse(data) as Partial<BudgetRow>;
+  } catch {
+    /* keep defaults */
+  }
+  return {
+    id,
+    title: parsed.title ?? "Untitled",
+    subtitle: parsed.subtitle ?? "",
+    income: sanitizeEntries(parsed.income),
+    expenses: sanitizeEntries(parsed.expenses),
+    archived: parsed.archived ?? false,
+    archivedAt: parsed.archivedAt,
+    updatedAt,
+    order: parsed.order ?? Date.now(),
+    shareCode: shareCode ?? undefined,
+    undoStack: [],
+    redoStack: [],
+  };
+}
+
+type SyncStatus = "idle" | "syncing" | "synced" | "error";
+
+function SyncIcon({ status }: { status: SyncStatus; className?: string }) {
+  if (status === "syncing")
+    return <Loader2 className="size-3.5 animate-spin text-muted-foreground" />;
+  if (status === "synced")
+    return <Cloud className="size-3.5 text-emerald-500" />;
+  if (status === "error")
+    return <CloudOff className="size-3.5 text-destructive" />;
+  return <Cloud className="size-3.5 text-muted-foreground/40" />;
+}
+
 function BudgetApp() {
   const [budgets, setBudgets] = useState<BudgetRow[]>([]);
   const [activeId, setActiveIdState] = useState<string | null>(null);
@@ -100,6 +182,35 @@ function BudgetApp() {
   const [closeCode, setCloseCode] = useState("");
   const [closeInput, setCloseInput] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
+
+  // Sync state
+  const [deviceId, setDeviceId] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
+
+  // Share dialog state
+  const [shareOpen, setShareOpen] = useState<string | null>(null); // budget id
+  const [shareCodeDisplay, setShareCodeDisplay] = useState<string | null>(null);
+  const [shareCodeLoading, setShareCodeLoading] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+
+  // Open-shared dialog
+  const [openSharedOpen, setOpenSharedOpen] = useState(false);
+  const [sharedCodeInput, setSharedCodeInput] = useState("");
+  const [sharedCodeError, setSharedCodeError] = useState<string | null>(null);
+  const [sharedCodeLoading, setSharedCodeLoading] = useState(false);
+
+  // Permissions dialog
+  const [permOpen, setPermOpen] = useState<string | null>(null); // budget id
+  const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [permLoading, setPermLoading] = useState(false);
+  const [newPermDeviceId, setNewPermDeviceId] = useState("");
+  const [newPermWrite, setNewPermWrite] = useState(false);
+  const [permGranting, setPermGranting] = useState(false);
+
+  // Device ID info dialog
+  const [deviceIdOpen, setDeviceIdOpen] = useState(false);
+  const [deviceIdCopied, setDeviceIdCopied] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const budgetsRef = useRef<BudgetRow[]>([]);
   const burstSnapRef = useRef<BudgetSnapshot | null>(null);
@@ -107,15 +218,27 @@ function BudgetApp() {
   const burstBudgetIdRef = useRef<string | null>(null);
   const undoRef = useRef<() => void>(() => {});
   const redoRef = useRef<() => void>(() => {});
+  const deviceIdRef = useRef<string | null>(null);
 
-  // Load from IDB on mount
+  // Sync scheduling
+  const syncDirtyRef = useRef<Set<string>>(new Set());
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const SYNC_DEBOUNCE_MS = 3000;
+
+  // Load from IDB on mount, then do initial remote sync
   useEffect(() => {
     (async () => {
-      const [rows, meta] = await Promise.all([loadAll(), getMeta()]);
+      const [rows, meta, did] = await Promise.all([loadAll(), getMeta(), getDeviceId()]);
+      setDeviceId(did);
+      deviceIdRef.current = did;
+
+      let finalRows = rows;
+
       if (rows.length === 0) {
         const b = createBudget();
         await putBudget(b);
         await persistActiveId(b.id);
+        finalRows = [b];
         setBudgets([b]);
         setActiveIdState(b.id);
       } else {
@@ -127,9 +250,80 @@ function BudgetApp() {
             : openRows[0]?.id ?? null;
         setActiveIdState(id);
       }
+
       setLoaded(true);
+
+      // Initial remote sync in background
+      void doInitialSync(did, finalRows);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const doInitialSync = async (did: string, localRows: BudgetRow[]) => {
+    const owned = localRows.filter((r) => !r.syncSource);
+    const payload = owned.map((b) => ({
+      id: b.id,
+      data: serializeForSync(b),
+      updatedAt: b.updatedAt,
+      shareCode: b.shareCode ?? null,
+    }));
+
+    setSyncStatus("syncing");
+    const result = await syncOwnedBudgets(did, payload);
+    if (!result) {
+      setSyncStatus("error");
+      return;
+    }
+
+    // Merge server budgets into local state
+    const merged: BudgetRow[] = [...localRows];
+    for (const sb of result) {
+      const localIdx = merged.findIndex((b) => b.id === sb.id);
+      if (localIdx === -1) {
+        // New budget from another device — add locally
+        const nb = deserializeFromSync(sb.id, sb.data, sb.updatedAt, sb.shareCode ?? null);
+        await putBudget(nb);
+        merged.push(nb);
+      } else if (sb.updatedAt > merged[localIdx].updatedAt) {
+        // Server has newer version
+        const nb = deserializeFromSync(sb.id, sb.data, sb.updatedAt, sb.shareCode ?? null);
+        await putBudget(nb);
+        merged[localIdx] = nb;
+      }
+    }
+
+    setBudgets(merged);
+    budgetsRef.current = merged;
+    setSyncStatus("synced");
+    setTimeout(() => setSyncStatus("idle"), 3000);
+
+    // Also refresh shared budgets
+    await refreshSharedBudgets(did, merged);
+  };
+
+  const refreshSharedBudgets = async (did: string, currentBudgets: BudgetRow[]) => {
+    const shared = currentBudgets.filter((b) => b.syncSource);
+    if (shared.length === 0) return;
+
+    for (const b of shared) {
+      const src = b.syncSource as SyncSource;
+      const remote = await fetchSharedBudget(src.shareCode, did);
+      if (!remote) continue;
+      if (remote.updatedAt > b.updatedAt) {
+        const updated: BudgetRow = {
+          ...b,
+          ...JSON.parse(remote.data) as Partial<BudgetRow>,
+          id: b.id, // keep local id
+          updatedAt: remote.updatedAt,
+          syncSource: { ...src, canWrite: remote.canWrite },
+          undoStack: [],
+          redoStack: [],
+        };
+        await putBudget(updated);
+        setBudgets((arr) => arr.map((x) => (x.id === updated.id ? updated : x)));
+      }
+    }
+  };
 
   const openBudgets = useMemo(
     () => budgets.filter((b) => !b.archived).sort((a, b) => a.order - b.order),
@@ -146,20 +340,96 @@ function BudgetApp() {
   const active =
     budgets.find((b) => b.id === activeId && !b.archived) ?? openBudgets[0] ?? null;
 
-  // Persist active id
   useEffect(() => {
     if (loaded) persistActiveId(active?.id ?? null);
   }, [active?.id, loaded]);
 
-  // Keep budgets ref in sync for use inside timers
-  useEffect(() => { budgetsRef.current = budgets; }, [budgets]);
+  useEffect(() => {
+    budgetsRef.current = budgets;
+  }, [budgets]);
+
+  // Re-sync on reconnect
+  useEffect(() => {
+    const onOnline = () => {
+      if (deviceIdRef.current) {
+        void doInitialSync(deviceIdRef.current, budgetsRef.current);
+      }
+    };
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const scheduleSync = (row: BudgetRow) => {
+    const did = deviceIdRef.current;
+    if (!did) return;
+
+    if (row.syncSource?.canWrite) {
+      // Shared budget with write access — debounce push
+      syncDirtyRef.current.add(`shared:${row.id}`);
+    } else if (!row.syncSource) {
+      // Owned budget
+      syncDirtyRef.current.add(row.id);
+    }
+
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => void flushSync(), SYNC_DEBOUNCE_MS);
+  };
+
+  const flushSync = async () => {
+    const did = deviceIdRef.current;
+    if (!did) return;
+
+    const dirty = [...syncDirtyRef.current];
+    syncDirtyRef.current.clear();
+    if (dirty.length === 0) return;
+
+    setSyncStatus("syncing");
+
+    const ownedIds = dirty.filter((k) => !k.startsWith("shared:"));
+    const sharedKeys = dirty.filter((k) => k.startsWith("shared:")).map((k) => k.slice(7));
+
+    let ok = true;
+
+    if (ownedIds.length > 0) {
+      const toSync = budgetsRef.current
+        .filter((b) => ownedIds.includes(b.id))
+        .map((b) => ({
+          id: b.id,
+          data: serializeForSync(b),
+          updatedAt: b.updatedAt,
+          shareCode: b.shareCode ?? null,
+        }));
+      const result = await syncOwnedBudgets(did, toSync);
+      if (!result) ok = false;
+    }
+
+    for (const localId of sharedKeys) {
+      const b = budgetsRef.current.find((x) => x.id === localId);
+      if (!b?.syncSource?.canWrite) continue;
+      const success = await updateSharedBudget(
+        b.syncSource.shareCode,
+        did,
+        serializeForSync(b),
+        b.updatedAt,
+      );
+      if (!success) ok = false;
+    }
+
+    setSyncStatus(ok ? "synced" : "error");
+    if (ok) setTimeout(() => setSyncStatus("idle"), 3000);
+  };
 
   const persistRow = (row: BudgetRow) => {
     void putBudget(row);
+    scheduleSync(row);
   };
 
   const snapOf = (b: BudgetRow): BudgetSnapshot => ({
-    title: b.title, subtitle: b.subtitle, income: b.income, expenses: b.expenses,
+    title: b.title,
+    subtitle: b.subtitle,
+    income: b.income,
+    expenses: b.expenses,
   });
 
   const BURST_MS = 600;
@@ -168,8 +438,10 @@ function BudgetApp() {
     if (!active) return;
 
     if (immediate) {
-      // Cancel pending burst and use its pre-burst snapshot (or current state)
-      if (burstTimerRef.current) { clearTimeout(burstTimerRef.current); burstTimerRef.current = null; }
+      if (burstTimerRef.current) {
+        clearTimeout(burstTimerRef.current);
+        burstTimerRef.current = null;
+      }
       const snapToPush = burstSnapRef.current ?? snapOf(active);
       burstSnapRef.current = null;
       burstBudgetIdRef.current = null;
@@ -184,13 +456,11 @@ function BudgetApp() {
       setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
       persistRow(updated);
     } else {
-      // Save the pre-burst snapshot on the first change of a new burst
       if (!burstSnapRef.current || burstBudgetIdRef.current !== active.id) {
         burstSnapRef.current = snapOf(active);
         burstBudgetIdRef.current = active.id;
       }
 
-      // Reset burst timer — commit snapshot to history after quiet period
       if (burstTimerRef.current) clearTimeout(burstTimerRef.current);
       const budgetId = active.id;
       burstTimerRef.current = setTimeout(() => {
@@ -210,7 +480,6 @@ function BudgetApp() {
         void putBudget(committed);
       }, BURST_MS);
 
-      // Apply the change immediately; clear redo so it can't be re-applied
       const updated: BudgetRow = { ...active, ...patch, redoStack: [], updatedAt: Date.now() };
       setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
       persistRow(updated);
@@ -218,19 +487,21 @@ function BudgetApp() {
   };
 
   const undo = () => {
-    // Cancel pending burst — restore to pre-burst state
-    if (burstTimerRef.current) { clearTimeout(burstTimerRef.current); burstTimerRef.current = null; }
+    if (burstTimerRef.current) {
+      clearTimeout(burstTimerRef.current);
+      burstTimerRef.current = null;
+    }
     const burstSnap = burstSnapRef.current;
     burstSnapRef.current = null;
     burstBudgetIdRef.current = null;
 
-    const a = budgetsRef.current.find((b) => b.id === activeId && !b.archived)
-      ?? budgetsRef.current.filter((b) => !b.archived).sort((x, y) => x.order - y.order)[0]
-      ?? null;
+    const a =
+      budgetsRef.current.find((b) => b.id === activeId && !b.archived) ??
+      budgetsRef.current.filter((b) => !b.archived).sort((x, y) => x.order - y.order)[0] ??
+      null;
     if (!a) return;
 
     if (burstSnap) {
-      // Undo the uncommitted burst — don't touch the undo/redo stacks
       const restored: BudgetRow = { ...a, ...burstSnap, updatedAt: Date.now() };
       setBudgets((arr) => arr.map((b) => (b.id === restored.id ? restored : b)));
       persistRow(restored);
@@ -252,14 +523,17 @@ function BudgetApp() {
   };
 
   const redo = () => {
-    // Discard any pending burst on redo
-    if (burstTimerRef.current) { clearTimeout(burstTimerRef.current); burstTimerRef.current = null; }
+    if (burstTimerRef.current) {
+      clearTimeout(burstTimerRef.current);
+      burstTimerRef.current = null;
+    }
     burstSnapRef.current = null;
     burstBudgetIdRef.current = null;
 
-    const a = budgetsRef.current.find((b) => b.id === activeId && !b.archived)
-      ?? budgetsRef.current.filter((b) => !b.archived).sort((x, y) => x.order - y.order)[0]
-      ?? null;
+    const a =
+      budgetsRef.current.find((b) => b.id === activeId && !b.archived) ??
+      budgetsRef.current.filter((b) => !b.archived).sort((x, y) => x.order - y.order)[0] ??
+      null;
     if (!a) return;
 
     const redoStack = a.redoStack ?? [];
@@ -276,22 +550,26 @@ function BudgetApp() {
     persistRow(restored);
   };
 
-  // Update stable refs each render so the keyboard handler always calls the latest versions
   undoRef.current = undo;
   redoRef.current = redo;
 
-  // Keyboard shortcuts — registered once, uses refs to avoid stale closures
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
-      if (e.key === "z" && !e.shiftKey) { e.preventDefault(); undoRef.current(); }
-      if (e.key === "y" || (e.key === "z" && e.shiftKey)) { e.preventDefault(); redoRef.current(); }
+      if (e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undoRef.current();
+      }
+      if (e.key === "y" || (e.key === "z" && e.shiftKey)) {
+        e.preventDefault();
+        redoRef.current();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  const moveTab = async (id: string, direction: -1 | 1) => { // -1 = up, 1 = down
+  const moveTab = async (id: string, direction: -1 | 1) => {
     const idx = openBudgets.findIndex((b) => b.id === id);
     const newIdx = idx + direction;
     if (idx === -1 || newIdx < 0 || newIdx >= openBudgets.length) return;
@@ -341,7 +619,6 @@ function BudgetApp() {
     };
     await putBudget(archived);
     setBudgets((arr) => arr.map((b) => (b.id === archived.id ? archived : b)));
-    // Pick a new active tab if needed
     if (activeId === archived.id) {
       const remaining = openBudgets.filter((b) => b.id !== archived.id);
       if (remaining.length > 0) {
@@ -401,9 +678,7 @@ function BudgetApp() {
       income: active.income,
       expenses: active.expenses,
     };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json",
-    });
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     const safeName = (active.title || "budget").replace(/[^\w\-]+/g, "_").toLowerCase();
@@ -425,7 +700,7 @@ function BudgetApp() {
       let i = 0;
       for (const file of files) {
         const text = await file.text();
-        const data = JSON.parse(text);
+        const data = JSON.parse(text) as Record<string, unknown>;
         const b = createBudget({
           title:
             typeof data.title === "string"
@@ -446,6 +721,130 @@ function BudgetApp() {
     }
   };
 
+  // Share dialog handlers
+  const openShareDialog = async (budgetId: string) => {
+    const b = budgets.find((x) => x.id === budgetId);
+    setShareCodeDisplay(b?.shareCode ?? null);
+    setShareOpen(budgetId);
+  };
+
+  const handleEnableShare = async () => {
+    if (!shareOpen || !deviceId) return;
+    setShareCodeLoading(true);
+    const code = await generateShareCode(shareOpen, deviceId);
+    if (code) {
+      const updated = budgets.find((b) => b.id === shareOpen);
+      if (updated) {
+        const newB = { ...updated, shareCode: code, updatedAt: Date.now() };
+        await putBudget(newB);
+        setBudgets((arr) => arr.map((b) => (b.id === shareOpen ? newB : b)));
+        setShareCodeDisplay(code);
+        scheduleSync(newB);
+      }
+    }
+    setShareCodeLoading(false);
+  };
+
+  const handleDisableShare = async () => {
+    if (!shareOpen || !deviceId || !shareCodeDisplay) return;
+    setShareCodeLoading(true);
+    await disableShareCode(shareOpen, deviceId);
+    const updated = budgets.find((b) => b.id === shareOpen);
+    if (updated) {
+      const newB = { ...updated, shareCode: undefined, updatedAt: Date.now() };
+      await putBudget(newB);
+      setBudgets((arr) => arr.map((b) => (b.id === shareOpen ? newB : b)));
+      setShareCodeDisplay(null);
+      scheduleSync(newB);
+    }
+    setShareCodeLoading(false);
+  };
+
+  const copyCode = (code: string, setCopied: (v: boolean) => void) => {
+    void navigator.clipboard.writeText(code).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  // Open shared budget by code
+  const handleOpenShared = async () => {
+    if (!deviceId) return;
+    const code = sharedCodeInput.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8);
+    if (code.length !== 8) {
+      setSharedCodeError("Enter the full 8-character code.");
+      return;
+    }
+    setSharedCodeError(null);
+    setSharedCodeLoading(true);
+    const result = await fetchSharedBudget(code, deviceId);
+    if (!result) {
+      setSharedCodeError("Budget not found or sync unavailable.");
+      setSharedCodeLoading(false);
+      return;
+    }
+    // Check if already open
+    const already = budgets.find((b) => b.syncSource?.shareCode === code);
+    if (already) {
+      setActiveIdState(already.id);
+      setOpenSharedOpen(false);
+      setSharedCodeInput("");
+      setSharedCodeLoading(false);
+      return;
+    }
+    let parsed: Partial<BudgetRow> = {};
+    try {
+      parsed = JSON.parse(result.data) as Partial<BudgetRow>;
+    } catch {/* */}
+    const nb = createBudget({
+      title: parsed.title ?? "Shared Budget",
+      subtitle: parsed.subtitle ?? "",
+      income: sanitizeEntries(parsed.income),
+      expenses: sanitizeEntries(parsed.expenses),
+      order: Date.now(),
+      syncSource: { shareCode: code, remoteBudgetId: result.id, canWrite: result.canWrite },
+    });
+    await putBudget(nb);
+    setBudgets((arr) => [...arr, nb]);
+    setActiveIdState(nb.id);
+    setOpenSharedOpen(false);
+    setSharedCodeInput("");
+    setSharedCodeLoading(false);
+  };
+
+  // Permissions dialog
+  const openPermDialog = async (budgetId: string) => {
+    setPermOpen(budgetId);
+    setPermissions([]);
+    setNewPermDeviceId("");
+    setNewPermWrite(false);
+    if (!deviceId) return;
+    setPermLoading(true);
+    const perms = await getPermissions(budgetId, deviceId);
+    setPermissions(perms ?? []);
+    setPermLoading(false);
+  };
+
+  const handleGrantPerm = async () => {
+    if (!permOpen || !deviceId || !newPermDeviceId.trim()) return;
+    setPermGranting(true);
+    const ok = await grantPermission(permOpen, deviceId, newPermDeviceId.trim(), newPermWrite);
+    if (ok) {
+      setPermissions((arr) => {
+        const filtered = arr.filter((p) => p.deviceId !== newPermDeviceId.trim());
+        return [...filtered, { deviceId: newPermDeviceId.trim(), canWrite: newPermWrite }];
+      });
+      setNewPermDeviceId("");
+    }
+    setPermGranting(false);
+  };
+
+  const handleRevokePerm = async (targetDeviceId: string) => {
+    if (!permOpen || !deviceId) return;
+    await revokePermission(permOpen, deviceId, targetDeviceId);
+    setPermissions((arr) => arr.filter((p) => p.deviceId !== targetDeviceId));
+  };
+
   if (!loaded || !active) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center text-muted-foreground text-sm">
@@ -454,9 +853,10 @@ function BudgetApp() {
     );
   }
 
+  const shareBudget = shareOpen ? budgets.find((b) => b.id === shareOpen) : null;
+
   return (
     <div className="min-h-screen bg-background flex">
-      {/* Backdrop - mobile only, closes sidebar on tap */}
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/30 lg:hidden"
@@ -468,19 +868,27 @@ function BudgetApp() {
       {sidebarOpen && (
         <aside className="fixed top-0 left-0 h-full z-50 w-56 border-r border-border bg-card flex flex-col lg:sticky lg:h-screen lg:shrink-0">
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Budgets</span>
-            <button
-              onClick={() => setSidebarOpen(false)}
-              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              aria-label="Close sidebar"
-            >
-              <X className="size-4" />
-            </button>
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Budgets
+            </span>
+            <div className="flex items-center gap-1.5">
+              <span title={syncStatus === "idle" ? "Sync idle" : syncStatus}>
+                <SyncIcon status={syncStatus} />
+              </span>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                aria-label="Close sidebar"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
           </div>
 
           <nav className="flex-1 overflow-y-auto py-1">
             {openBudgets.map((b, idx) => {
               const isActive = b.id === active.id;
+              const isShared = !!b.syncSource;
               return (
                 <div
                   key={b.id}
@@ -491,6 +899,9 @@ function BudgetApp() {
                       : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                   }`}
                 >
+                  {isShared && (
+                    <span title="Shared budget"><Link2 className="size-3 shrink-0 text-muted-foreground/60" /></span>
+                  )}
                   <span className="flex-1 text-sm truncate">{b.title || "Untitled"}</span>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -505,24 +916,46 @@ function BudgetApp() {
                     <DropdownMenuContent align="start">
                       <DropdownMenuItem
                         disabled={idx === 0}
-                        onClick={(e) => { e.stopPropagation(); void moveTab(b.id, -1); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void moveTab(b.id, -1);
+                        }}
                       >
                         <ChevronUp className="size-3.5 mr-2" /> Move up
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         disabled={idx === openBudgets.length - 1}
-                        onClick={(e) => { e.stopPropagation(); void moveTab(b.id, 1); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void moveTab(b.id, 1);
+                        }}
                       >
                         <ChevronDown className="size-3.5 mr-2" /> Move down
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
-                        onClick={(e) => { e.stopPropagation(); duplicateTab(b); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          duplicateTab(b);
+                        }}
                       >
                         <Copy className="size-3.5 mr-2" /> Duplicate
                       </DropdownMenuItem>
+                      {!isShared && (
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void openShareDialog(b.id);
+                          }}
+                        >
+                          <Share2 className="size-3.5 mr-2" /> Share
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem
-                        onClick={(e) => { e.stopPropagation(); requestCloseTab(b); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          requestCloseTab(b);
+                        }}
                       >
                         <Archive className="size-3.5 mr-2" /> Archive
                       </DropdownMenuItem>
@@ -539,6 +972,16 @@ function BudgetApp() {
               className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
             >
               <Plus className="size-4" /> New budget
+            </button>
+            <button
+              onClick={() => {
+                setSharedCodeInput("");
+                setSharedCodeError(null);
+                setOpenSharedOpen(true);
+              }}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+            >
+              <Link2 className="size-4" /> Open shared
             </button>
             <button
               onClick={() => setArchiveOpen(true)}
@@ -564,6 +1007,12 @@ function BudgetApp() {
             >
               <Download className="size-4" /> Export
             </button>
+            <button
+              onClick={() => setDeviceIdOpen(true)}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+            >
+              <Info className="size-4" /> Device ID
+            </button>
           </div>
         </aside>
       )}
@@ -582,129 +1031,141 @@ function BudgetApp() {
           </div>
         )}
 
-      <div className="max-w-6xl mx-auto px-6 py-10">
-        <header className="mb-8">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json,.json"
-            multiple
-            onChange={handleFileChange}
-            className="hidden"
-          />
-          <input
-            type="text"
-            value={active.title}
-            onChange={(e) => updateActive({ title: e.target.value })}
-            placeholder="Untitled budget"
-            className="w-full bg-transparent text-4xl font-bold tracking-tight text-foreground outline-none focus:bg-card rounded px-1 -mx-1"
-          />
-          <input
-            type="text"
-            value={active.subtitle}
-            onChange={(e) => updateActive({ subtitle: e.target.value })}
-            placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
-            className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60"
-          />
-        </header>
-
-        {importError && (
-          <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 text-destructive px-3 py-2 text-sm">
-            {importError}
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="space-y-6">
-            <BudgetTable
-              title="Money In"
-              variant="income"
-              entries={active.income}
-              onChange={(income, immediate) => updateActive({ income }, immediate)}
-              totalLabel="Total income"
-              total={totalIncome}
+        <div className="max-w-6xl mx-auto px-6 py-10">
+          <header className="mb-8">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/json,.json"
+              multiple
+              onChange={handleFileChange}
+              className="hidden"
             />
-            <BudgetTable
-              title="Money Out"
-              variant="expense"
-              entries={active.expenses}
-              onChange={(expenses, immediate) => updateActive({ expenses }, immediate)}
-              totalLabel="Total expenses"
-              total={totalExpenses}
+            <input
+              type="text"
+              value={active.title}
+              onChange={(e) => updateActive({ title: e.target.value })}
+              placeholder="Untitled budget"
+              readOnly={!!active.syncSource && !active.syncSource.canWrite}
+              className="w-full bg-transparent text-4xl font-bold tracking-tight text-foreground outline-none focus:bg-card rounded px-1 -mx-1 read-only:cursor-default"
             />
-          </div>
-
-          <div className="space-y-6">
-            <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
-              <div className="bg-leftover text-leftover-foreground px-4 py-2.5 text-sm font-semibold tracking-wide uppercase">
-                Money Left Over
-              </div>
-              <div className="flex items-center justify-between px-4 py-3">
-                <span className="text-sm font-medium">Income minus expenses</span>
-                <span
-                  className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}
-                >
-                  {leftover.toFixed(2)}
+            <input
+              type="text"
+              value={active.subtitle}
+              onChange={(e) => updateActive({ subtitle: e.target.value })}
+              placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
+              readOnly={!!active.syncSource && !active.syncSource.canWrite}
+              className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60 read-only:cursor-default"
+            />
+            {active.syncSource && (
+              <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                <Link2 className="size-3" />
+                <span>
+                  Shared budget via code{" "}
+                  <span className="font-mono font-medium">{active.syncSource.shareCode}</span>
+                  {active.syncSource.canWrite ? " · read/write" : " · read only"}
                 </span>
               </div>
+            )}
+          </header>
+
+          {importError && (
+            <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 text-destructive px-3 py-2 text-sm">
+              {importError}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="space-y-6">
+              <BudgetTable
+                title="Money In"
+                variant="income"
+                entries={active.income}
+                onChange={(income, immediate) => updateActive({ income }, immediate)}
+                totalLabel="Total income"
+                total={totalIncome}
+              />
+              <BudgetTable
+                title="Money Out"
+                variant="expense"
+                entries={active.expenses}
+                onChange={(expenses, immediate) => updateActive({ expenses }, immediate)}
+                totalLabel="Total expenses"
+                total={totalExpenses}
+              />
             </div>
 
-            <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground text-center mb-4">
-                Income / Expenses
-              </h2>
-              <div className="h-72">
-                {chartData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={chartData}
-                        dataKey="value"
-                        nameKey="name"
-                        cx="50%"
-                        cy="50%"
-                        outerRadius={100}
-                        label={({ value }) => value.toFixed(2)}
-                        labelLine={false}
-                      >
-                        {chartData.map((entry, i) => (
-                          <Cell key={i} fill={entry.color} />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "var(--popover)",
-                          border: "1px solid var(--border)",
-                          borderRadius: "0.5rem",
-                          fontSize: "0.875rem",
-                        }}
-                        formatter={(v: number) => v.toFixed(2)}
-                      />
-                      <Legend iconType="circle" wrapperStyle={{ fontSize: "0.75rem" }} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-                    Add income or expenses to see the chart.
-                  </div>
-                )}
+            <div className="space-y-6">
+              <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
+                <div className="bg-leftover text-leftover-foreground px-4 py-2.5 text-sm font-semibold tracking-wide uppercase">
+                  Money Left Over
+                </div>
+                <div className="flex items-center justify-between px-4 py-3">
+                  <span className="text-sm font-medium">Income minus expenses</span>
+                  <span
+                    className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}
+                  >
+                    {leftover.toFixed(2)}
+                  </span>
+                </div>
               </div>
-            </div>
 
-            <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
-              <div className="grid grid-cols-3 gap-4 text-center">
-                <Stat label="Income" value={totalIncome} colorVar="--income" />
-                <Stat label="Expenses" value={totalExpenses} colorVar="--expense" />
-                <Stat label="Left over" value={leftover} colorVar="--leftover" />
+              <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
+                <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground text-center mb-4">
+                  Income / Expenses
+                </h2>
+                <div className="h-72">
+                  {chartData.length > 0 ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={chartData}
+                          dataKey="value"
+                          nameKey="name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={100}
+                          label={({ value }: { value: number }) => value.toFixed(2)}
+                          labelLine={false}
+                        >
+                          {chartData.map((entry, i) => (
+                            <Cell key={i} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          contentStyle={{
+                            backgroundColor: "var(--popover)",
+                            border: "1px solid var(--border)",
+                            borderRadius: "0.5rem",
+                            fontSize: "0.875rem",
+                          }}
+                          formatter={(v: number) => v.toFixed(2)}
+                        />
+                        <Legend iconType="circle" wrapperStyle={{ fontSize: "0.75rem" }} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                      Add income or expenses to see the chart.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
+                <div className="grid grid-cols-3 gap-4 text-center">
+                  <Stat label="Income" value={totalIncome} colorVar="--income" />
+                  <Stat label="Expenses" value={totalExpenses} colorVar="--expense" />
+                  <Stat label="Left over" value={leftover} colorVar="--leftover" />
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <footer className="mt-10 text-center text-xs text-muted-foreground">
-          Saved automatically in IndexedDB · Import or export to share budgets as .budget.json files
-        </footer>
-      </div>
+          <footer className="mt-10 text-center text-xs text-muted-foreground">
+            Saved locally · Synced online when connected · Share budgets via 8-character code
+          </footer>
+        </div>
       </div>
 
       {/* Floating undo/redo bar */}
@@ -732,19 +1193,14 @@ function BudgetApp() {
         </button>
       </div>
 
-      {/* Close confirmation dialog */}
-      <Dialog
-        open={!!closeTarget}
-        onOpenChange={(o) => {
-          if (!o) setCloseTarget(null);
-        }}
-      >
+      {/* ── Close/archive confirmation ─────────────────────────────── */}
+      <Dialog open={!!closeTarget} onOpenChange={(o) => { if (!o) setCloseTarget(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Archive this budget?</DialogTitle>
             <DialogDescription>
-              Closing a tab archives it. Type the 6-digit code below to confirm.
-              You can restore it later from the archive.
+              Closing a tab archives it. Type the 6-digit code below to confirm. You can restore it
+              later from the archive.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
@@ -755,9 +1211,7 @@ function BudgetApp() {
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
                 Confirmation code
               </div>
-              <div className="text-2xl font-mono tracking-[0.4em] tabular-nums">
-                {closeCode}
-              </div>
+              <div className="text-2xl font-mono tracking-[0.4em] tabular-nums">{closeCode}</div>
             </div>
             <input
               type="text"
@@ -789,7 +1243,7 @@ function BudgetApp() {
         </DialogContent>
       </Dialog>
 
-      {/* Archive dialog */}
+      {/* ── Archive dialog ─────────────────────────────────────────── */}
       <Dialog open={archiveOpen} onOpenChange={setArchiveOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
@@ -811,9 +1265,7 @@ function BudgetApp() {
                     className="flex items-center gap-3 border border-border rounded-md px-3 py-2"
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">
-                        {b.title || "Untitled"}
-                      </div>
+                      <div className="text-sm font-medium truncate">{b.title || "Untitled"}</div>
                       <div className="text-xs text-muted-foreground truncate">
                         {b.subtitle || "—"}
                         {b.archivedAt
@@ -829,7 +1281,11 @@ function BudgetApp() {
                     </button>
                     <button
                       onClick={() => {
-                        if (confirm(`Permanently delete "${b.title || "Untitled"}"? This cannot be undone.`)) {
+                        if (
+                          confirm(
+                            `Permanently delete "${b.title || "Untitled"}"? This cannot be undone.`,
+                          )
+                        ) {
                           void permanentlyDelete(b);
                         }
                       }}
@@ -841,6 +1297,253 @@ function BudgetApp() {
                 ))}
               </ul>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Share dialog ───────────────────────────────────────────── */}
+      <Dialog open={!!shareOpen} onOpenChange={(o) => { if (!o) setShareOpen(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Share2 className="size-4" /> Share Budget
+            </DialogTitle>
+            <DialogDescription>
+              Share <span className="font-medium">{shareBudget?.title || "this budget"}</span> with
+              others via an 8-character code.
+            </DialogDescription>
+          </DialogHeader>
+
+          {shareCodeDisplay ? (
+            <div className="space-y-3">
+              <div className="rounded-md border border-border bg-muted/40 px-3 py-3 text-center">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">
+                  Share code
+                </div>
+                <div className="text-2xl font-mono tracking-[0.3em] tabular-nums font-semibold">
+                  {shareCodeDisplay}
+                </div>
+              </div>
+              <button
+                onClick={() => copyCode(shareCodeDisplay, setCodeCopied)}
+                className="w-full inline-flex items-center justify-center gap-2 border border-border rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors"
+              >
+                {codeCopied ? (
+                  <><Check className="size-3.5 text-emerald-500" /> Copied!</>
+                ) : (
+                  <><Copy className="size-3.5" /> Copy code</>
+                )}
+              </button>
+              <p className="text-xs text-muted-foreground text-center">
+                Anyone with this code gets read access. Grant write access via{" "}
+                <button
+                  className="underline underline-offset-2 hover:text-foreground transition-colors"
+                  onClick={() => {
+                    setShareOpen(null);
+                    void openPermDialog(shareOpen!);
+                  }}
+                >
+                  Permissions
+                </button>.
+              </p>
+              <button
+                onClick={handleDisableShare}
+                disabled={shareCodeLoading}
+                className="w-full inline-flex items-center justify-center gap-2 border border-destructive/40 text-destructive rounded-md px-3 py-2 text-sm hover:bg-destructive/10 transition-colors disabled:opacity-50"
+              >
+                {shareCodeLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                Stop sharing
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Sharing is not enabled. Enable it to get a code others can use to access this
+                budget.
+              </p>
+              <button
+                onClick={handleEnableShare}
+                disabled={shareCodeLoading}
+                className="w-full inline-flex items-center justify-center gap-2 bg-primary text-primary-foreground rounded-md px-3 py-2 text-sm hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                {shareCodeLoading ? <Loader2 className="size-3.5 animate-spin" /> : <Share2 className="size-3.5" />}
+                Enable sharing
+              </button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Open shared budget dialog ──────────────────────────────── */}
+      <Dialog
+        open={openSharedOpen}
+        onOpenChange={(o) => {
+          if (!o) {
+            setOpenSharedOpen(false);
+            setSharedCodeInput("");
+            setSharedCodeError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Link2 className="size-4" /> Open Shared Budget
+            </DialogTitle>
+            <DialogDescription>
+              Enter the 8-character code to access a budget shared with you.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <input
+              type="text"
+              autoFocus
+              maxLength={8}
+              value={sharedCodeInput}
+              onChange={(e) =>
+                setSharedCodeInput(
+                  e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 8),
+                )
+              }
+              onKeyDown={(e) => { if (e.key === "Enter") void handleOpenShared(); }}
+              placeholder="XXXXXXXX"
+              className="w-full text-center text-xl font-mono tracking-[0.4em] tabular-nums border border-input rounded-md px-3 py-2.5 bg-background outline-none focus:ring-2 focus:ring-ring uppercase placeholder:text-muted-foreground/40"
+            />
+            {sharedCodeError && (
+              <p className="text-xs text-destructive text-center">{sharedCodeError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <button
+              onClick={() => setOpenSharedOpen(false)}
+              className="inline-flex items-center gap-2 bg-card border border-border rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleOpenShared}
+              disabled={sharedCodeLoading || sharedCodeInput.length !== 8}
+              className="inline-flex items-center gap-2 bg-primary text-primary-foreground rounded-md px-3 py-2 text-sm hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {sharedCodeLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
+              Open budget
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Permissions dialog ─────────────────────────────────────── */}
+      <Dialog open={!!permOpen} onOpenChange={(o) => { if (!o) setPermOpen(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldCheck className="size-4" /> Manage Access
+            </DialogTitle>
+            <DialogDescription>
+              Control which device IDs can view or edit this budget.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {permLoading ? (
+              <div className="flex justify-center py-4">
+                <Loader2 className="size-5 animate-spin text-muted-foreground" />
+              </div>
+            ) : permissions.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-2">
+                No one has been granted access yet.
+              </p>
+            ) : (
+              <ul className="space-y-2 max-h-48 overflow-y-auto">
+                {permissions.map((p) => (
+                  <li
+                    key={p.deviceId}
+                    className="flex items-center gap-2 border border-border rounded-md px-3 py-2"
+                  >
+                    <span className="flex-1 text-xs font-mono text-muted-foreground truncate">
+                      {p.deviceId}
+                    </span>
+                    <span
+                      className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                        p.canWrite
+                          ? "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                          : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {p.canWrite ? "write" : "read"}
+                    </span>
+                    <button
+                      onClick={() => void handleRevokePerm(p.deviceId)}
+                      className="text-xs text-destructive hover:underline"
+                    >
+                      Revoke
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="border-t border-border pt-3 space-y-2">
+              <p className="text-xs font-medium text-muted-foreground">Grant access to a device</p>
+              <input
+                type="text"
+                value={newPermDeviceId}
+                onChange={(e) => setNewPermDeviceId(e.target.value.trim())}
+                placeholder="Paste device UUID here"
+                className="w-full font-mono text-xs border border-input rounded-md px-3 py-2 bg-background outline-none focus:ring-2 focus:ring-ring"
+              />
+              <div className="flex items-center gap-3">
+                <label className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={newPermWrite}
+                    onChange={(e) => setNewPermWrite(e.target.checked)}
+                    className="rounded"
+                  />
+                  Allow editing (write access)
+                </label>
+                <button
+                  onClick={handleGrantPerm}
+                  disabled={permGranting || !newPermDeviceId.trim()}
+                  className="ml-auto inline-flex items-center gap-1 bg-primary text-primary-foreground rounded-md px-3 py-1.5 text-xs hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {permGranting ? <Loader2 className="size-3 animate-spin" /> : null}
+                  Grant
+                </button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Device ID dialog ───────────────────────────────────────── */}
+      <Dialog open={deviceIdOpen} onOpenChange={setDeviceIdOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Info className="size-4" /> Your Device ID
+            </DialogTitle>
+            <DialogDescription>
+              Share this ID with a budget owner so they can grant you write access.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border border-border bg-muted/40 px-3 py-3">
+              <p className="text-xs font-mono break-all text-foreground select-all">
+                {deviceId ?? "Loading…"}
+              </p>
+            </div>
+            <button
+              onClick={() => deviceId && copyCode(deviceId, setDeviceIdCopied)}
+              disabled={!deviceId}
+              className="w-full inline-flex items-center justify-center gap-2 border border-border rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors disabled:opacity-50"
+            >
+              {deviceIdCopied ? (
+                <><Check className="size-3.5 text-emerald-500" /> Copied!</>
+              ) : (
+                <><Copy className="size-3.5" /> Copy ID</>
+              )}
+            </button>
           </div>
         </DialogContent>
       </Dialog>
