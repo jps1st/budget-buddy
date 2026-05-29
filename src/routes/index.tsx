@@ -194,6 +194,8 @@ function BudgetApp() {
   const syncDirtyRef = useRef<Set<string>>(new Set());
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const SYNC_DEBOUNCE_MS = 3000;
+  // Stable ref so the flush-on-hide effect can always call the latest flushSync
+  const flushSyncRef = useRef<() => Promise<void>>(async () => {});
 
   // Load from IDB on mount, then do initial remote sync
   useEffect(() => {
@@ -411,6 +413,23 @@ function BudgetApp() {
     return () => { for (const es of sources) es.close(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedTokensKey]);
+
+  // Keep the ref pointing at the latest flushSync (which only uses other refs internally)
+  // so the flush-on-hide effect below can be registered once without stale closure risk.
+  useEffect(() => { flushSyncRef.current = flushSync; });
+
+  // Flush any pending dirty writes when the tab hides or the window closes,
+  // so shared-budget edits are not lost if the user navigates away before the debounce fires.
+  useEffect(() => {
+    const flush = () => { void flushSyncRef.current(); };
+    const onVisChange = () => { if (document.visibilityState === "hidden") flush(); };
+    document.addEventListener("visibilitychange", onVisChange);
+    window.addEventListener("beforeunload", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisChange);
+      window.removeEventListener("beforeunload", flush);
+    };
+  }, []);
 
   const scheduleSync = (row: BudgetRow) => {
     const did = deviceIdRef.current;
@@ -797,6 +816,7 @@ function BudgetApp() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
+    window.open(text, "_blank", "noopener,noreferrer");
   };
 
   if (!loaded || !active) {
