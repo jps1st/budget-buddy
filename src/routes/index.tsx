@@ -816,7 +816,6 @@ function BudgetApp() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
-    window.open(text, "_blank", "noopener,noreferrer");
   };
 
   if (!loaded || !active) {
