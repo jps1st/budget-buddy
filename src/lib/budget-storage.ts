@@ -23,6 +23,7 @@ export type BudgetRow = {
   archivedAt?: number;
   updatedAt: number;
   order: number;
+  roToken?: string;        // set on owner's budget after sharing is enabled; used for SSE
   syncSource?: SyncSource; // set for budgets opened via a share link
   undoStack?: BudgetSnapshot[];
   redoStack?: BudgetSnapshot[];

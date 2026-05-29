@@ -121,7 +121,7 @@ function gen6() {
 }
 
 function serializeForSync(b: BudgetRow): string {
-  const { undoStack: _u, redoStack: _r, syncSource: _s, ...rest } = b;
+  const { undoStack: _u, redoStack: _r, syncSource: _s, roToken: _ro, ...rest } = b;
   return JSON.stringify(rest);
 }
 
@@ -255,7 +255,10 @@ function BudgetApp() {
         await putBudget(nb);
         merged.push(nb);
       } else if (sb.updatedAt > merged[localIdx].updatedAt) {
-        const nb = deserializeFromSync(sb.id, sb.data, sb.updatedAt);
+        const nb = {
+          ...deserializeFromSync(sb.id, sb.data, sb.updatedAt),
+          roToken: merged[localIdx].roToken, // preserve so owner SSE keeps watching
+        };
         await putBudget(nb);
         merged[localIdx] = nb;
       }
@@ -333,49 +336,67 @@ function BudgetApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // SSE: open one EventSource per shared budget; re-open if the set of tokens changes.
-  // A stable string key avoids closing/reopening when only budget *data* changes.
+  // SSE: open one EventSource per shared budget AND per owned budget with an active share link.
+  // Keyed on a stable string so connections survive data-only state updates.
   const sharedTokensKey = useMemo(
     () =>
-      budgets
-        .filter((b) => !!b.syncSource)
-        .map((b) => `${b.id}:${b.syncSource!.token}`)
+      [
+        ...budgets
+          .filter((b) => !!b.syncSource)
+          .map((b) => `s:${b.id}:${b.syncSource!.token}`),
+        ...budgets
+          .filter((b) => !b.syncSource && !!b.roToken)
+          .map((b) => `o:${b.id}:${b.roToken}`),
+      ]
         .sort()
         .join(","),
     [budgets],
   );
 
   useEffect(() => {
-    const sharedBudgets = budgetsRef.current.filter((b) => !!b.syncSource);
-    if (sharedBudgets.length === 0) return;
+    const current = budgetsRef.current;
+    const sharedBudgets = current.filter((b) => !!b.syncSource);
+    const ownedShared = current.filter((b) => !b.syncSource && !!b.roToken);
+    if (sharedBudgets.length === 0 && ownedShared.length === 0) return;
 
     const sources: EventSource[] = [];
 
+    function applyParsed(
+      cur: BudgetRow,
+      remoteData: string,
+      remoteUpdatedAt: number,
+    ): Partial<BudgetRow> | null {
+      if (remoteUpdatedAt <= cur.updatedAt) return null;
+      let parsed: Partial<BudgetRow> = {};
+      try { parsed = JSON.parse(remoteData) as Partial<BudgetRow>; } catch { /* keep */ }
+      return {
+        title: typeof parsed.title === "string" ? parsed.title : cur.title,
+        subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
+        income: Array.isArray(parsed.income) ? parsed.income : cur.income,
+        expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
+        updatedAt: remoteUpdatedAt,
+        undoStack: [],
+        redoStack: [],
+      };
+    }
+
+    // ── Shared (recipient) budgets ─────────────────────────────────────────
     for (const b of sharedBudgets) {
       const token = b.syncSource!.token;
       const budgetId = b.id;
       const es = new EventSource(`/api/watch/${token}`);
 
-      // On (re)connect fetch the latest state so we never miss an update
-      // that happened while the connection was down.
       es.onopen = () => {
         void fetchByToken(token).then((remote) => {
           if (!remote) return;
           setBudgets((arr) => {
             const cur = arr.find((x) => x.id === budgetId);
-            if (!cur?.syncSource || remote.updatedAt <= cur.updatedAt) return arr;
-            let parsed: Partial<BudgetRow> = {};
-            try { parsed = JSON.parse(remote.data) as Partial<BudgetRow>; } catch { /* keep */ }
+            if (!cur?.syncSource) return arr;
+            const patch = applyParsed(cur, remote.data, remote.updatedAt);
+            if (!patch) return arr;
             const updated: BudgetRow = {
-              ...cur,
-              title: typeof parsed.title === "string" ? parsed.title : cur.title,
-              subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
-              income: Array.isArray(parsed.income) ? parsed.income : cur.income,
-              expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
-              updatedAt: remote.updatedAt,
+              ...cur, ...patch,
               syncSource: { token, canWrite: remote.canWrite },
-              undoStack: [],
-              redoStack: [],
             };
             void putBudget(updated);
             return arr.map((x) => (x.id === budgetId ? updated : x));
@@ -383,25 +404,51 @@ function BudgetApp() {
         });
       };
 
-      // Push event: apply the incoming change immediately
       es.onmessage = (event) => {
         const payload = JSON.parse(event.data as string) as { data: string; updatedAt: number };
         setBudgets((arr) => {
           const cur = arr.find((x) => x.id === budgetId);
-          if (!cur?.syncSource || payload.updatedAt <= cur.updatedAt) return arr;
-          let parsed: Partial<BudgetRow> = {};
-          try { parsed = JSON.parse(payload.data) as Partial<BudgetRow>; } catch { /* keep */ }
-          const updated: BudgetRow = {
-            ...cur,
-            title: typeof parsed.title === "string" ? parsed.title : cur.title,
-            subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
-            income: Array.isArray(parsed.income) ? parsed.income : cur.income,
-            expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
-            updatedAt: payload.updatedAt,
-            syncSource: cur.syncSource,
-            undoStack: [],
-            redoStack: [],
-          };
+          if (!cur?.syncSource) return arr;
+          const patch = applyParsed(cur, payload.data, payload.updatedAt);
+          if (!patch) return arr;
+          const updated: BudgetRow = { ...cur, ...patch, syncSource: cur.syncSource };
+          void putBudget(updated);
+          return arr.map((x) => (x.id === budgetId ? updated : x));
+        });
+      };
+
+      sources.push(es);
+    }
+
+    // ── Owned budgets with active share links (owner sees editor edits live) ─
+    for (const b of ownedShared) {
+      const token = b.roToken!;
+      const budgetId = b.id;
+      const es = new EventSource(`/api/watch/${token}`);
+
+      es.onopen = () => {
+        void fetchByToken(token).then((remote) => {
+          if (!remote) return;
+          setBudgets((arr) => {
+            const cur = arr.find((x) => x.id === budgetId);
+            if (!cur || cur.syncSource) return arr;
+            const patch = applyParsed(cur, remote.data, remote.updatedAt);
+            if (!patch) return arr;
+            const updated: BudgetRow = { ...cur, ...patch };
+            void putBudget(updated);
+            return arr.map((x) => (x.id === budgetId ? updated : x));
+          });
+        });
+      };
+
+      es.onmessage = (event) => {
+        const payload = JSON.parse(event.data as string) as { data: string; updatedAt: number };
+        setBudgets((arr) => {
+          const cur = arr.find((x) => x.id === budgetId);
+          if (!cur || cur.syncSource) return arr;
+          const patch = applyParsed(cur, payload.data, payload.updatedAt);
+          if (!patch) return arr;
+          const updated: BudgetRow = { ...cur, ...patch };
           void putBudget(updated);
           return arr.map((x) => (x.id === budgetId ? updated : x));
         });
@@ -800,6 +847,17 @@ function BudgetApp() {
     setShareLinksLoading(true);
     const links = await getShareLinks(budgetId, deviceId);
     setShareLinks(links);
+    if (links) {
+      // Persist roToken so the SSE effect can subscribe the owner to editor updates
+      setBudgets((arr) =>
+        arr.map((b) => {
+          if (b.id !== budgetId || b.syncSource || b.roToken === links.roToken) return b;
+          const updated = { ...b, roToken: links.roToken };
+          void putBudget(updated);
+          return updated;
+        }),
+      );
+    }
     setShareLinksLoading(false);
   };
 
@@ -808,6 +866,14 @@ function BudgetApp() {
     setShareLinksLoading(true);
     await revokeShareLinks(shareOpen, deviceId);
     setShareLinks(null);
+    setBudgets((arr) =>
+      arr.map((b) => {
+        if (b.id !== shareOpen || b.syncSource || !b.roToken) return b;
+        const updated = { ...b, roToken: undefined };
+        void putBudget(updated);
+        return updated;
+      }),
+    );
     setShareLinksLoading(false);
   };
 
