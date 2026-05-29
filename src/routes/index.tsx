@@ -193,7 +193,7 @@ function BudgetApp() {
   // Sync scheduling
   const syncDirtyRef = useRef<Set<string>>(new Set());
   const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const SYNC_DEBOUNCE_MS = 3000;
+  const SYNC_DEBOUNCE_MS = 600;
   // Stable ref so the flush-on-hide effect can always call the latest flushSync
   const flushSyncRef = useRef<() => Promise<void>>(async () => {});
 
