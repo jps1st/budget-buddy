@@ -2,12 +2,11 @@ export type SyncBudget = {
   id: string;
   data: string;
   updatedAt: number;
-  shareCode: string | null;
 };
 
-export type Permission = {
-  deviceId: string;
-  canWrite: boolean;
+export type ShareLinks = {
+  roToken: string;
+  rwToken: string;
 };
 
 export type SharedBudgetResult = {
@@ -17,7 +16,10 @@ export type SharedBudgetResult = {
   canWrite: boolean;
 };
 
-async function apiFetch(path: string, options?: RequestInit & { deviceId: string }): Promise<Response | null> {
+async function apiFetch(
+  path: string,
+  options?: RequestInit & { deviceId: string },
+): Promise<Response | null> {
   const { deviceId, ...rest } = options ?? { deviceId: "" };
   try {
     const res = await fetch(path, {
@@ -52,93 +54,55 @@ export async function syncOwnedBudgets(
   }
 }
 
-export async function generateShareCode(budgetId: string, deviceId: string): Promise<string | null> {
-  const res = await apiFetch("/api/share/generate", {
+export async function getShareLinks(
+  budgetId: string,
+  deviceId: string,
+): Promise<ShareLinks | null> {
+  const res = await apiFetch("/api/share/links", {
     deviceId,
     method: "POST",
     body: JSON.stringify({ budgetId }),
   });
   if (!res || !res.ok) return null;
   try {
-    const data = (await res.json()) as { shareCode: string };
-    return data.shareCode;
+    return (await res.json()) as ShareLinks;
   } catch {
     return null;
   }
 }
 
-export async function disableShareCode(budgetId: string, deviceId: string): Promise<boolean> {
-  const res = await apiFetch("/api/share/disable", {
+export async function revokeShareLinks(
+  budgetId: string,
+  deviceId: string,
+): Promise<boolean> {
+  const res = await apiFetch("/api/share/links", {
     deviceId,
-    method: "POST",
+    method: "DELETE",
     body: JSON.stringify({ budgetId }),
   });
   return !!res?.ok;
 }
 
-export async function fetchSharedBudget(
-  code: string,
-  deviceId: string,
-): Promise<SharedBudgetResult | null> {
-  const res = await apiFetch(`/api/share/${encodeURIComponent(code)}`, { deviceId });
-  if (!res || !res.ok) return null;
+export async function fetchByToken(token: string): Promise<SharedBudgetResult | null> {
   try {
+    const res = await fetch(`/api/t/${encodeURIComponent(token)}`);
+    if (!res.ok) return null;
     return (await res.json()) as SharedBudgetResult;
   } catch {
     return null;
   }
 }
 
-export async function updateSharedBudget(
-  code: string,
+export async function updateByToken(
+  token: string,
   deviceId: string,
   data: string,
   updatedAt: number,
 ): Promise<boolean> {
-  const res = await apiFetch(`/api/share/${encodeURIComponent(code)}`, {
+  const res = await apiFetch(`/api/t/${encodeURIComponent(token)}`, {
     deviceId,
     method: "PUT",
     body: JSON.stringify({ data, updatedAt }),
   });
-  return !!res?.ok;
-}
-
-export async function getPermissions(
-  budgetId: string,
-  deviceId: string,
-): Promise<Permission[] | null> {
-  const res = await apiFetch(`/api/permissions/${encodeURIComponent(budgetId)}`, { deviceId });
-  if (!res || !res.ok) return null;
-  try {
-    const data = (await res.json()) as { permissions: Permission[] };
-    return data.permissions;
-  } catch {
-    return null;
-  }
-}
-
-export async function grantPermission(
-  budgetId: string,
-  ownerDeviceId: string,
-  targetDeviceId: string,
-  canWrite: boolean,
-): Promise<boolean> {
-  const res = await apiFetch(`/api/permissions/${encodeURIComponent(budgetId)}`, {
-    deviceId: ownerDeviceId,
-    method: "POST",
-    body: JSON.stringify({ deviceId: targetDeviceId, canWrite }),
-  });
-  return !!res?.ok;
-}
-
-export async function revokePermission(
-  budgetId: string,
-  ownerDeviceId: string,
-  targetDeviceId: string,
-): Promise<boolean> {
-  const res = await apiFetch(
-    `/api/permissions/${encodeURIComponent(budgetId)}/${encodeURIComponent(targetDeviceId)}`,
-    { deviceId: ownerDeviceId, method: "DELETE" },
-  );
   return !!res?.ok;
 }

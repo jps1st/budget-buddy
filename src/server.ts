@@ -17,19 +17,28 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS budgets (
     id TEXT PRIMARY KEY,
     owner_device_id TEXT NOT NULL,
-    share_code TEXT UNIQUE,
     data TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
-  CREATE TABLE IF NOT EXISTS budget_access (
-    budget_id TEXT NOT NULL,
-    device_id TEXT NOT NULL,
-    can_write INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (budget_id, device_id),
-    FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE
-  );
   CREATE INDEX IF NOT EXISTS idx_budgets_owner ON budgets(owner_device_id);
+  DROP TABLE IF EXISTS budget_access;
 `);
+
+// Idempotent migrations: SQLite doesn't support UNIQUE on ALTER TABLE ADD COLUMN,
+// so we add the column then create the index separately.
+for (const [col, idx] of [
+  [
+    "ALTER TABLE budgets ADD COLUMN ro_token TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_ro_token ON budgets(ro_token) WHERE ro_token IS NOT NULL",
+  ],
+  [
+    "ALTER TABLE budgets ADD COLUMN rw_token TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_rw_token ON budgets(rw_token) WHERE rw_token IS NOT NULL",
+  ],
+] as [string, string][]) {
+  try { db.exec(col); } catch { /* column already exists */ }
+  try { db.exec(idx); } catch { /* index already exists */ }
+}
 
 process.on("exit", () => db.close());
 
@@ -101,9 +110,9 @@ function json(data: unknown, status = 200): Response {
   });
 }
 
-function generateShareCode(): string {
-  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  return Array.from({ length: 8 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+function generateToken(): string {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
 // ─── DB row types ─────────────────────────────────────────────────────────────
@@ -111,7 +120,8 @@ function generateShareCode(): string {
 type DbBudget = {
   id: string;
   owner_device_id: string;
-  share_code: string | null;
+  ro_token: string | null;
+  rw_token: string | null;
   data: string;
   updated_at: number;
 };
@@ -119,7 +129,7 @@ type DbBudget = {
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
 async function handleSync(deviceId: string, request: Request): Promise<Response> {
-  let body: { budgets: { id: string; data: string; updatedAt: number; shareCode: string | null }[] };
+  let body: { budgets: { id: string; data: string; updatedAt: number }[] };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -132,10 +142,10 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
     "SELECT id, owner_device_id, updated_at FROM budgets WHERE id = ?",
   );
   const insertBudget = db.prepare(
-    "INSERT INTO budgets (id, owner_device_id, share_code, data, updated_at) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO budgets (id, owner_device_id, data, updated_at) VALUES (?, ?, ?, ?)",
   );
   const updateBudget = db.prepare(
-    "UPDATE budgets SET data = ?, updated_at = ?, share_code = ? WHERE id = ?",
+    "UPDATE budgets SET data = ?, updated_at = ? WHERE id = ?",
   );
 
   for (const b of body.budgets) {
@@ -146,14 +156,14 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
       | undefined;
 
     if (!existing) {
-      insertBudget.run(b.id, deviceId, b.shareCode ?? null, b.data, b.updatedAt);
+      insertBudget.run(b.id, deviceId, b.data, b.updatedAt);
     } else if (existing.owner_device_id === deviceId && b.updatedAt >= existing.updated_at) {
-      updateBudget.run(b.data, b.updatedAt, b.shareCode ?? null, b.id);
+      updateBudget.run(b.data, b.updatedAt, b.id);
     }
   }
 
   const results = db
-    .prepare("SELECT id, share_code, data, updated_at FROM budgets WHERE owner_device_id = ?")
+    .prepare("SELECT id, data, updated_at FROM budgets WHERE owner_device_id = ?")
     .all(deviceId) as DbBudget[];
 
   return json({
@@ -161,12 +171,12 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
       id: r.id,
       data: r.data,
       updatedAt: r.updated_at,
-      shareCode: r.share_code,
     })),
   });
 }
 
-async function handleShareGenerate(deviceId: string, request: Request): Promise<Response> {
+// POST /api/share/links — generate (idempotent) and return both tokens
+async function handleGetShareLinks(deviceId: string, request: Request): Promise<Response> {
   let body: { budgetId: string };
   try {
     body = (await request.json()) as typeof body;
@@ -175,26 +185,29 @@ async function handleShareGenerate(deviceId: string, request: Request): Promise<
   }
 
   const budget = db
-    .prepare("SELECT id, owner_device_id, share_code FROM budgets WHERE id = ?")
+    .prepare("SELECT id, owner_device_id, ro_token, rw_token FROM budgets WHERE id = ?")
     .get(body.budgetId) as DbBudget | undefined;
 
   if (!budget) return json({ error: "Budget not found" }, 404);
   if (budget.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
-  if (budget.share_code) return json({ shareCode: budget.share_code });
 
-  let shareCode = "";
-  let attempt = 0;
-  do {
-    shareCode = generateShareCode();
-    const conflict = db.prepare("SELECT id FROM budgets WHERE share_code = ?").get(shareCode);
-    if (!conflict) break;
-  } while (++attempt < 10);
+  let roToken = budget.ro_token;
+  let rwToken = budget.rw_token;
 
-  db.prepare("UPDATE budgets SET share_code = ? WHERE id = ?").run(shareCode, body.budgetId);
-  return json({ shareCode });
+  if (!roToken) {
+    roToken = generateToken();
+    db.prepare("UPDATE budgets SET ro_token = ? WHERE id = ?").run(roToken, body.budgetId);
+  }
+  if (!rwToken) {
+    rwToken = generateToken();
+    db.prepare("UPDATE budgets SET rw_token = ? WHERE id = ?").run(rwToken, body.budgetId);
+  }
+
+  return json({ roToken, rwToken });
 }
 
-async function handleShareDisable(deviceId: string, request: Request): Promise<Response> {
+// DELETE /api/share/links — revoke both tokens
+async function handleRevokeShareLinks(deviceId: string, request: Request): Promise<Response> {
   let body: { budgetId: string };
   try {
     body = (await request.json()) as typeof body;
@@ -209,50 +222,33 @@ async function handleShareDisable(deviceId: string, request: Request): Promise<R
   if (!budget) return json({ error: "Budget not found" }, 404);
   if (budget.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
 
-  db.prepare("UPDATE budgets SET share_code = NULL WHERE id = ?").run(body.budgetId);
+  db.prepare("UPDATE budgets SET ro_token = NULL, rw_token = NULL WHERE id = ?").run(
+    body.budgetId,
+  );
   return json({ ok: true });
 }
 
-function handleShareGet(deviceId: string, code: string): Response {
+// GET /api/t/:token — fetch budget by token (no auth header required)
+function handleGetByToken(token: string): Response {
   const budget = db
     .prepare(
-      "SELECT id, owner_device_id, share_code, data, updated_at FROM budgets WHERE share_code = ?",
+      "SELECT id, data, updated_at, ro_token, rw_token FROM budgets WHERE ro_token = ? OR rw_token = ?",
     )
-    .get(code) as DbBudget | undefined;
+    .get(token, token) as DbBudget | undefined;
 
   if (!budget) return json({ error: "Not found" }, 404);
 
-  const isOwner = budget.owner_device_id === deviceId;
-  let canWrite = isOwner;
-
-  if (!isOwner) {
-    const access = db
-      .prepare("SELECT can_write FROM budget_access WHERE budget_id = ? AND device_id = ?")
-      .get(budget.id, deviceId) as { can_write: number } | undefined;
-    canWrite = access?.can_write === 1;
-  }
-
+  const canWrite = budget.rw_token === token;
   return json({ id: budget.id, data: budget.data, updatedAt: budget.updated_at, canWrite });
 }
 
-async function handleSharePut(
-  deviceId: string,
-  code: string,
-  request: Request,
-): Promise<Response> {
+// PUT /api/t/:token — update budget via rw token
+async function handlePutByToken(token: string, request: Request): Promise<Response> {
   const budget = db
-    .prepare("SELECT id, owner_device_id, updated_at FROM budgets WHERE share_code = ?")
-    .get(code) as DbBudget | undefined;
+    .prepare("SELECT id, updated_at FROM budgets WHERE rw_token = ?")
+    .get(token) as DbBudget | undefined;
 
-  if (!budget) return json({ error: "Not found" }, 404);
-
-  const isOwner = budget.owner_device_id === deviceId;
-  if (!isOwner) {
-    const access = db
-      .prepare("SELECT can_write FROM budget_access WHERE budget_id = ? AND device_id = ?")
-      .get(budget.id, deviceId) as { can_write: number } | undefined;
-    if (access?.can_write !== 1) return json({ error: "Forbidden" }, 403);
-  }
+  if (!budget) return json({ error: "Not found or read-only" }, 403);
 
   let body: { data: string; updatedAt: number };
   try {
@@ -272,110 +268,28 @@ async function handleSharePut(
   return json({ ok: true });
 }
 
-function handlePermissionsGet(deviceId: string, budgetId: string): Response {
-  const budget = db
-    .prepare("SELECT owner_device_id FROM budgets WHERE id = ?")
-    .get(budgetId) as { owner_device_id: string } | undefined;
-
-  if (!budget) return json({ error: "Not found" }, 404);
-  if (budget.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
-
-  const results = db
-    .prepare("SELECT device_id, can_write FROM budget_access WHERE budget_id = ?")
-    .all(budgetId) as { device_id: string; can_write: number }[];
-
-  return json({
-    permissions: results.map((r) => ({ deviceId: r.device_id, canWrite: r.can_write === 1 })),
-  });
-}
-
-async function handlePermissionsPost(
-  deviceId: string,
-  budgetId: string,
-  request: Request,
-): Promise<Response> {
-  const budget = db
-    .prepare("SELECT owner_device_id FROM budgets WHERE id = ?")
-    .get(budgetId) as { owner_device_id: string } | undefined;
-
-  if (!budget) return json({ error: "Not found" }, 404);
-  if (budget.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
-
-  let body: { deviceId: string; canWrite: boolean };
-  try {
-    body = (await request.json()) as typeof body;
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
-  }
-
-  if (!body.deviceId || body.deviceId === deviceId)
-    return json({ error: "Invalid target device ID" }, 400);
-
-  db.prepare(
-    "INSERT INTO budget_access (budget_id, device_id, can_write) VALUES (?, ?, ?)" +
-      " ON CONFLICT(budget_id, device_id) DO UPDATE SET can_write = excluded.can_write",
-  ).run(budgetId, body.deviceId, body.canWrite ? 1 : 0);
-
-  return json({ ok: true });
-}
-
-function handlePermissionsDelete(
-  deviceId: string,
-  budgetId: string,
-  targetDeviceId: string,
-): Response {
-  const budget = db
-    .prepare("SELECT owner_device_id FROM budgets WHERE id = ?")
-    .get(budgetId) as { owner_device_id: string } | undefined;
-
-  if (!budget) return json({ error: "Not found" }, 404);
-  if (budget.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
-
-  db.prepare("DELETE FROM budget_access WHERE budget_id = ? AND device_id = ?").run(
-    budgetId,
-    targetDeviceId,
-  );
-
-  return json({ ok: true });
-}
-
 // ─── API router ───────────────────────────────────────────────────────────────
 
 async function handleApiRequest(request: Request, url: URL): Promise<Response> {
-  const deviceId = request.headers.get("X-Device-Id");
-  if (!deviceId) return json({ error: "Missing X-Device-Id header" }, 401);
-
   const path = url.pathname;
   const method = request.method;
 
+  // Token endpoints don't require device ID
+  const tokenMatch = path.match(/^\/api\/t\/([A-Za-z0-9]{32})$/);
+  if (tokenMatch) {
+    if (method === "GET") return handleGetByToken(tokenMatch[1]);
+    if (method === "PUT") return handlePutByToken(tokenMatch[1], request);
+  }
+
+  const deviceId = request.headers.get("X-Device-Id");
+  if (!deviceId) return json({ error: "Missing X-Device-Id header" }, 401);
+
   try {
     if (path === "/api/sync" && method === "POST") return handleSync(deviceId, request);
-    if (path === "/api/share/generate" && method === "POST")
-      return handleShareGenerate(deviceId, request);
-    if (path === "/api/share/disable" && method === "POST")
-      return handleShareDisable(deviceId, request);
-
-    const shareMatch = path.match(/^\/api\/share\/([A-Z0-9]{8})$/);
-    if (shareMatch) {
-      if (method === "GET") return handleShareGet(deviceId, shareMatch[1]);
-      if (method === "PUT") return handleSharePut(deviceId, shareMatch[1], request);
-    }
-
-    const permBase = path.match(/^\/api\/permissions\/([^/]+)$/);
-    if (permBase) {
-      const budgetId = decodeURIComponent(permBase[1]);
-      if (method === "GET") return handlePermissionsGet(deviceId, budgetId);
-      if (method === "POST") return handlePermissionsPost(deviceId, budgetId, request);
-    }
-
-    const permDelete = path.match(/^\/api\/permissions\/([^/]+)\/([^/]+)$/);
-    if (permDelete && method === "DELETE") {
-      return handlePermissionsDelete(
-        deviceId,
-        decodeURIComponent(permDelete[1]),
-        decodeURIComponent(permDelete[2]),
-      );
-    }
+    if (path === "/api/share/links" && method === "POST")
+      return handleGetShareLinks(deviceId, request);
+    if (path === "/api/share/links" && method === "DELETE")
+      return handleRevokeShareLinks(deviceId, request);
 
     return json({ error: "Not found" }, 404);
   } catch (err) {
@@ -404,8 +318,6 @@ async function fetchHandler(request: Request): Promise<Response> {
 }
 
 // ─── Server startup ───────────────────────────────────────────────────────────
-// Guard prevents starting a second HTTP listener when Vite loads this file
-// in dev mode (TSS_DEV_SERVER is replaced at compile time with "true"/"false").
 
 if (process.env.TSS_DEV_SERVER !== "true") {
   serve({

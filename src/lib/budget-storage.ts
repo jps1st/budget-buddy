@@ -9,8 +9,7 @@ export type BudgetSnapshot = {
 };
 
 export type SyncSource = {
-  shareCode: string;
-  remoteBudgetId: string;
+  token: string;
   canWrite: boolean;
 };
 
@@ -24,8 +23,7 @@ export type BudgetRow = {
   archivedAt?: number;
   updatedAt: number;
   order: number;
-  shareCode?: string;      // set by owner when sharing is enabled
-  syncSource?: SyncSource; // set for budgets fetched via share code
+  syncSource?: SyncSource; // set for budgets opened via a share link
   undoStack?: BudgetSnapshot[];
   redoStack?: BudgetSnapshot[];
 };

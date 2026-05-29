@@ -105,7 +105,7 @@ Edit `PORT` in `ecosystem.config.json` under `env_production`, or set the `PORT`
 
 ## Online Sync (SQLite)
 
-Budget data can be synced across devices and shared via 8-character codes. The server uses Node.js's built-in `node:sqlite` — no external database required. The database file is created automatically at `data/budget-sync.db` on first run.
+Budget data can be synced across devices and shared via links. The server uses Node.js's built-in `node:sqlite` — no external database required. The database file is created automatically at `data/budget-sync.db` on first run.
 
 **Requirements:** Node.js >= 22 (ships `node:sqlite` as a built-in).
 
@@ -113,7 +113,7 @@ Budget data can be synced across devices and shared via 8-character codes. The s
 
 - Each browser gets a persistent device ID stored in IndexedDB.
 - Owned budgets sync automatically (3-second debounce after changes).
-- Share a budget via an 8-character code; the owner controls read/write access per device.
+- Share a budget via a read-only or editable link; anyone with the link gets the corresponding access.
 - Shared budgets are opened by entering the code — they sync separately from owned budgets.
 - The sync status icon (top-right) shows idle / syncing / synced / offline states.
 
