@@ -331,14 +331,86 @@ function BudgetApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Live polling for shared budgets — runs every 5 s while any shared budget exists
-  const hasSharedBudgets = useMemo(() => budgets.some((b) => !!b.syncSource), [budgets]);
+  // SSE: open one EventSource per shared budget; re-open if the set of tokens changes.
+  // A stable string key avoids closing/reopening when only budget *data* changes.
+  const sharedTokensKey = useMemo(
+    () =>
+      budgets
+        .filter((b) => !!b.syncSource)
+        .map((b) => `${b.id}:${b.syncSource!.token}`)
+        .sort()
+        .join(","),
+    [budgets],
+  );
+
   useEffect(() => {
-    if (!hasSharedBudgets) return;
-    const id = setInterval(() => void refreshSharedBudgets(budgetsRef.current), 5000);
-    return () => clearInterval(id);
+    const sharedBudgets = budgetsRef.current.filter((b) => !!b.syncSource);
+    if (sharedBudgets.length === 0) return;
+
+    const sources: EventSource[] = [];
+
+    for (const b of sharedBudgets) {
+      const token = b.syncSource!.token;
+      const budgetId = b.id;
+      const es = new EventSource(`/api/watch/${token}`);
+
+      // On (re)connect fetch the latest state so we never miss an update
+      // that happened while the connection was down.
+      es.onopen = () => {
+        void fetchByToken(token).then((remote) => {
+          if (!remote) return;
+          setBudgets((arr) => {
+            const cur = arr.find((x) => x.id === budgetId);
+            if (!cur?.syncSource || remote.updatedAt <= cur.updatedAt) return arr;
+            let parsed: Partial<BudgetRow> = {};
+            try { parsed = JSON.parse(remote.data) as Partial<BudgetRow>; } catch { /* keep */ }
+            const updated: BudgetRow = {
+              ...cur,
+              title: typeof parsed.title === "string" ? parsed.title : cur.title,
+              subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
+              income: Array.isArray(parsed.income) ? parsed.income : cur.income,
+              expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
+              updatedAt: remote.updatedAt,
+              syncSource: { token, canWrite: remote.canWrite },
+              undoStack: [],
+              redoStack: [],
+            };
+            void putBudget(updated);
+            return arr.map((x) => (x.id === budgetId ? updated : x));
+          });
+        });
+      };
+
+      // Push event: apply the incoming change immediately
+      es.onmessage = (event) => {
+        const payload = JSON.parse(event.data as string) as { data: string; updatedAt: number };
+        setBudgets((arr) => {
+          const cur = arr.find((x) => x.id === budgetId);
+          if (!cur?.syncSource || payload.updatedAt <= cur.updatedAt) return arr;
+          let parsed: Partial<BudgetRow> = {};
+          try { parsed = JSON.parse(payload.data) as Partial<BudgetRow>; } catch { /* keep */ }
+          const updated: BudgetRow = {
+            ...cur,
+            title: typeof parsed.title === "string" ? parsed.title : cur.title,
+            subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
+            income: Array.isArray(parsed.income) ? parsed.income : cur.income,
+            expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
+            updatedAt: payload.updatedAt,
+            syncSource: cur.syncSource,
+            undoStack: [],
+            redoStack: [],
+          };
+          void putBudget(updated);
+          return arr.map((x) => (x.id === budgetId ? updated : x));
+        });
+      };
+
+      sources.push(es);
+    }
+
+    return () => { for (const es of sources) es.close(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasSharedBudgets]);
+  }, [sharedTokensKey]);
 
   const scheduleSync = (row: BudgetRow) => {
     const did = deviceIdRef.current;

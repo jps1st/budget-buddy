@@ -42,6 +42,35 @@ for (const [col, idx] of [
 
 process.on("exit", () => db.close());
 
+// ─── SSE registry ─────────────────────────────────────────────────────────────
+
+const enc = new TextEncoder();
+
+type SseController = ReadableStreamDefaultController<Uint8Array>;
+// budgetId → connected watchers
+const sseClients = new Map<string, Set<SseController>>();
+
+function notifyWatchers(budgetId: string, data: string, updatedAt: number) {
+  const clients = sseClients.get(budgetId);
+  if (!clients?.size) return;
+  const chunk = enc.encode(`data: ${JSON.stringify({ data, updatedAt })}\n\n`);
+  for (const ctrl of clients) {
+    try { ctrl.enqueue(chunk); } catch { clients.delete(ctrl); }
+  }
+}
+
+function registerWatcher(budgetId: string, ctrl: SseController) {
+  if (!sseClients.has(budgetId)) sseClients.set(budgetId, new Set());
+  sseClients.get(budgetId)!.add(ctrl);
+}
+
+function unregisterWatcher(budgetId: string, ctrl: SseController) {
+  const set = sseClients.get(budgetId);
+  if (!set) return;
+  set.delete(ctrl);
+  if (set.size === 0) sseClients.delete(budgetId);
+}
+
 // ─── SSR entry ────────────────────────────────────────────────────────────────
 
 type ServerEntry = {
@@ -159,6 +188,7 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
       insertBudget.run(b.id, deviceId, b.data, b.updatedAt);
     } else if (existing.owner_device_id === deviceId && b.updatedAt >= existing.updated_at) {
       updateBudget.run(b.data, b.updatedAt, b.id);
+      notifyWatchers(b.id, b.data, b.updatedAt);
     }
   }
 
@@ -263,9 +293,49 @@ async function handlePutByToken(token: string, request: Request): Promise<Respon
       body.updatedAt,
       budget.id,
     );
+    notifyWatchers(budget.id, body.data, body.updatedAt);
   }
 
   return json({ ok: true });
+}
+
+// GET /api/watch/:token — SSE stream; pushes events whenever the budget is updated
+function handleWatch(token: string): Response {
+  const budget = db
+    .prepare("SELECT id FROM budgets WHERE ro_token = ? OR rw_token = ?")
+    .get(token, token) as { id: string } | undefined;
+
+  if (!budget) return json({ error: "Not found" }, 404);
+
+  const budgetId = budget.id;
+  let ctrl: SseController;
+  let heartbeat: ReturnType<typeof setInterval>;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      ctrl = controller;
+      registerWatcher(budgetId, ctrl);
+      // Send an initial ping so the client knows the connection is live
+      controller.enqueue(enc.encode(": connected\n\n"));
+      // Keepalive comment every 25 s — prevents proxies from closing idle connections
+      heartbeat = setInterval(() => {
+        try { controller.enqueue(enc.encode(": ping\n\n")); } catch { clearInterval(heartbeat); }
+      }, 25_000);
+    },
+    cancel() {
+      clearInterval(heartbeat);
+      unregisterWatcher(budgetId, ctrl);
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }
 
 // ─── API router ───────────────────────────────────────────────────────────────
@@ -280,6 +350,9 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
     if (method === "GET") return handleGetByToken(tokenMatch[1]);
     if (method === "PUT") return handlePutByToken(tokenMatch[1], request);
   }
+
+  const watchMatch = path.match(/^\/api\/watch\/([A-Za-z0-9]{32})$/);
+  if (watchMatch && method === "GET") return handleWatch(watchMatch[1]);
 
   const deviceId = request.headers.get("X-Device-Id");
   if (!deviceId) return json({ error: "Missing X-Device-Id header" }, 401);
