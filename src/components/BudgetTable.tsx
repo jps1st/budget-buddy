@@ -41,12 +41,16 @@ export function BudgetTable({ title, variant, entries, onChange, totalLabel, tot
 
   const reorder = (fromId: string, toId: string) => {
     if (fromId === toId) return;
-    const from = entries.find((e) => e.id === fromId);
-    if (!from) return;
-    const rest = entries.filter((e) => e.id !== fromId);
-    const toIdx = rest.findIndex((e) => e.id === toId);
-    if (toIdx === -1) return;
-    onChange([...rest.slice(0, toIdx), from, ...rest.slice(toIdx)], true);
+    const fromIdx = entries.findIndex((e) => e.id === fromId);
+    const toIdx = entries.findIndex((e) => e.id === toId);
+    if (fromIdx === -1 || toIdx === -1) return;
+    const result = entries.filter((e) => e.id !== fromId);
+    // Dragging down → insert after target; dragging up → insert before target
+    const insertAt = fromIdx < toIdx
+      ? result.findIndex((e) => e.id === toId) + 1
+      : result.findIndex((e) => e.id === toId);
+    result.splice(insertAt, 0, entries[fromIdx]);
+    onChange(result, true);
   };
 
   return (
