@@ -116,9 +116,6 @@ function sanitizeEntries(arr: unknown): Entry[] {
     }));
 }
 
-function gen6() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
 
 function serializeForSync(b: BudgetRow): string {
   const { undoStack: _u, redoStack: _r, syncSource: _s, roToken: _ro, ...rest } = b;
@@ -166,8 +163,6 @@ function BudgetApp() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [importError, setImportError] = useState<string | null>(null);
   const [closeTarget, setCloseTarget] = useState<BudgetRow | null>(null);
-  const [closeCode, setCloseCode] = useState("");
-  const [closeInput, setCloseInput] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
 
   // Sync state
@@ -722,13 +717,11 @@ function BudgetApp() {
   };
 
   const requestCloseTab = (b: BudgetRow) => {
-    setCloseCode(gen6());
-    setCloseInput("");
     setCloseTarget(b);
   };
 
   const confirmCloseTab = async () => {
-    if (!closeTarget || closeInput !== closeCode) return;
+    if (!closeTarget) return;
     const archived: BudgetRow = {
       ...closeTarget,
       archived: true,
@@ -1219,36 +1212,14 @@ function BudgetApp() {
 
       {/* ── Close/archive confirmation ─────────────────────────────── */}
       <Dialog open={!!closeTarget} onOpenChange={(o) => { if (!o) setCloseTarget(null); }}>
-        <DialogContent>
+        <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Archive this budget?</DialogTitle>
             <DialogDescription>
-              Closing a tab archives it. Type the 6-digit code below to confirm. You can restore it
-              later from the archive.
+              <span className="font-medium text-foreground">{closeTarget?.title || "Untitled"}</span>
+              {" "}will be moved to the archive. You can restore it any time.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <div className="text-sm">
-              Budget: <span className="font-medium">{closeTarget?.title || "Untitled"}</span>
-            </div>
-            <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-center">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                Confirmation code
-              </div>
-              <div className="text-2xl font-mono tracking-[0.4em] tabular-nums">{closeCode}</div>
-            </div>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="\d{6}"
-              maxLength={6}
-              autoFocus
-              value={closeInput}
-              onChange={(e) => setCloseInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
-              placeholder="Enter the code"
-              className="w-full text-center text-lg font-mono tracking-[0.4em] tabular-nums border border-input rounded-md px-3 py-2 bg-background outline-none focus:ring-2 focus:ring-ring"
-            />
-          </div>
           <DialogFooter>
             <button
               onClick={() => setCloseTarget(null)}
@@ -1258,10 +1229,9 @@ function BudgetApp() {
             </button>
             <button
               onClick={confirmCloseTab}
-              disabled={closeInput !== closeCode}
-              className="inline-flex items-center gap-2 bg-destructive text-destructive-foreground rounded-md px-3 py-2 text-sm hover:bg-destructive/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="inline-flex items-center gap-2 bg-destructive text-destructive-foreground rounded-md px-3 py-2 text-sm hover:bg-destructive/90 transition-colors"
             >
-              <Archive className="size-4" /> Archive tab
+              <Archive className="size-4" /> Archive
             </button>
           </DialogFooter>
         </DialogContent>
