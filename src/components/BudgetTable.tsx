@@ -206,7 +206,7 @@ export function BudgetTable({
 
               {/* ── Transaction sub-rows (recording mode, expense only) ── */}
               {isRecording && variant === "expense" && (entry.transactions ?? []).map((tx) => {
-                const fromLabel = incomeEntries.find((e) => e.id === tx.fromIncomeId)?.label ?? tx.fromIncomeId;
+                const fromLabel = incomeEntries.find((e) => e.id === tx.fromIncomeId)?.label ?? "(deleted)";
                 return (
                   <div key={tx.id}
                     className="flex items-center gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground">
