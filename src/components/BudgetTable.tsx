@@ -157,7 +157,7 @@ export function BudgetTable({
                     {!readOnly && variant === "expense" ? (
                       <button
                         onClick={() => { setAddingTo(addingTo === entry.id ? null : entry.id); setNewTx(emptyTx()); }}
-                        className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0"
+                        className="p-1 rounded text-foreground/50 hover:text-foreground hover:bg-muted transition-colors shrink-0"
                         aria-label="Add transaction"
                       >
                         <Plus className="size-4" />
@@ -193,7 +193,7 @@ export function BudgetTable({
                     />
                     {!readOnly ? (
                       <button onClick={() => setPendingDelete(entry.id)}
-                        className="text-muted-foreground hover:text-destructive p-1 transition-colors shrink-0"
+                        className="text-foreground/40 hover:text-destructive p-1 transition-colors shrink-0"
                         aria-label="Remove">
                         <Trash2 className="size-4" />
                       </button>
