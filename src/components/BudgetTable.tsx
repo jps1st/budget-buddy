@@ -324,7 +324,7 @@ export function BudgetTable({
                     onChange={(e) => setNewTx((t) => ({ ...t, fromId: e.target.value }))}
                     className="flex-1 min-w-[8rem] text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
                   >
-                    <option value="">From income…</option>
+                    <option value="">Source…</option>
                     {incomeEntries.map((ie) => (
                       <option key={ie.id} value={ie.id}>{ie.label || "Unnamed"}</option>
                     ))}
