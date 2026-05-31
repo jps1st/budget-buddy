@@ -6,6 +6,7 @@ export type Transaction = {
   amount: number;
   fromIncomeId: string;
   date: string;
+  description?: string;
 };
 
 export type Entry = { id: string; label: string; amount: number; transactions?: Transaction[] };
@@ -36,7 +37,7 @@ function todayISO() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-const emptyTx = () => ({ amount: "", fromId: "", date: todayISO() });
+const emptyTx = () => ({ amount: "", fromId: "", date: todayISO(), description: "" });
 
 export function BudgetTable({
   title, variant, entries, onChange, totalLabel, total,
@@ -46,7 +47,7 @@ export function BudgetTable({
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
-  const [newTx, setNewTx] = useState(emptyTx);
+  const [newTx, setNewTx] = useState<{ amount: string; fromId: string; date: string; description: string }>(emptyTx);
 
   const updateEntry = (id: string, patch: Partial<Entry>) =>
     onChange(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -80,6 +81,7 @@ export function BudgetTable({
       amount: amt,
       fromIncomeId: newTx.fromId,
       date: newTx.date,
+      description: newTx.description.trim() || undefined,
     };
     updateEntry(entryId, {
       transactions: [...(entries.find((e) => e.id === entryId)?.transactions ?? []), tx],
@@ -215,6 +217,12 @@ export function BudgetTable({
                     <span className="font-medium text-foreground truncate">{fromLabel}</span>
                     <span className="text-muted-foreground/60">·</span>
                     <span>{tx.date}</span>
+                    {tx.description && (
+                      <>
+                        <span className="text-muted-foreground/60">·</span>
+                        <span className="italic truncate">{tx.description}</span>
+                      </>
+                    )}
                     {!readOnly && (
                       <button onClick={() => deleteTx(entry.id, tx.id)}
                         className="ml-auto text-muted-foreground hover:text-destructive transition-colors shrink-0"
@@ -250,6 +258,12 @@ export function BudgetTable({
                     type="date" value={newTx.date}
                     onChange={(e) => setNewTx((t) => ({ ...t, date: e.target.value }))}
                     className="text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <input
+                    type="text" placeholder="Note (optional)"
+                    value={newTx.description}
+                    onChange={(e) => setNewTx((t) => ({ ...t, description: e.target.value }))}
+                    className="flex-1 min-w-[8rem] text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
                   />
                   <button onClick={() => commitTx(entry.id)}
                     disabled={!newTx.amount || !newTx.fromId || !newTx.date}
