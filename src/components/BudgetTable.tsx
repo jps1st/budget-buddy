@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Trash2, Plus, GripVertical, X } from "lucide-react";
+import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown } from "lucide-react";
 import { fmt } from "@/lib/utils";
 import {
   Dialog,
@@ -64,6 +64,10 @@ export function BudgetTable({
   const [newTx, setNewTx] = useState<{ amount: string; fromId: string; date: string; description: string }>(emptyTx);
   const [viewTx, setViewTx] = useState<{ tx: Transaction; fromLabel: string; rowLabel: string } | null>(null);
   const [overspendWarn, setOverspendWarn] = useState<{ entryId: string; message: string } | null>(null);
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  const toggleRow = (id: string) =>
+    setExpandedRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
   const updateEntry = (id: string, patch: Partial<Entry>) =>
     onChange(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -155,6 +159,8 @@ export function BudgetTable({
           const spent      = (entry.transactions ?? []).reduce((s, t) => s + t.amount, 0);
           const remaining  = entry.amount - spent;
           const displayRem = remainingOverrides?.[entry.id] ?? remaining;
+          const txCount    = (entry.transactions ?? []).length;
+          const isExpanded = isRecording && variant === "expense" && expandedRows.has(entry.id);
 
           return (
             <div key={entry.id}>
@@ -162,15 +168,16 @@ export function BudgetTable({
               <div
                 onDragOver={(e) => { e.preventDefault(); setDragOverId(entry.id); }}
                 onDrop={(e)     => { e.preventDefault(); if (dragId) reorder(dragId, entry.id); setDragOverId(null); }}
+                onClick={() => { if (isRecording && variant === "expense" && !isPending) toggleRow(entry.id); }}
                 className={`group px-3 py-2 transition-colors ${
                   isPending
                     ? "flex flex-col gap-2"
                     : isRecording
-                      ? "grid grid-cols-[1fr_auto_auto] items-center gap-2"
+                      ? "grid grid-cols-[auto_1fr_auto_auto] items-center gap-2"
                       : "grid grid-cols-[auto_1fr_auto_auto] items-center gap-2"
                 } ${isOver ? "border-t-2 border-primary bg-primary/5" : "hover:bg-muted/40"} ${
                   isDragging ? "opacity-40" : ""
-                }`}
+                } ${isRecording && variant === "expense" ? "cursor-pointer" : ""}`}
               >
                 {isPending ? (
                   <>
@@ -191,7 +198,23 @@ export function BudgetTable({
                 ) : isRecording ? (
                   /* ── Recording mode row ─────────────────────────────── */
                   <>
-                    <span className="text-sm px-2 py-1 truncate">{entry.label || <span className="text-muted-foreground/60">Item</span>}</span>
+                    {variant === "expense" ? (
+                      <span className="text-muted-foreground/50 shrink-0">
+                        {isExpanded
+                          ? <ChevronDown className="size-3.5" />
+                          : <ChevronRight className="size-3.5" />}
+                      </span>
+                    ) : (
+                      <span className="w-3.5 shrink-0" />
+                    )}
+                    <span className="text-sm px-2 py-1 truncate flex items-center gap-1.5">
+                      {entry.label || <span className="text-muted-foreground/60">Item</span>}
+                      {variant === "expense" && txCount > 0 && !isExpanded && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {txCount}
+                        </span>
+                      )}
+                    </span>
                     <span className={`text-sm text-right tabular-nums px-2 py-1 ${
                       variant === "expense" ? (remaining < 0 ? "text-destructive font-semibold" : "text-foreground") : ""
                     }`}>
@@ -202,7 +225,12 @@ export function BudgetTable({
                     </span>
                     {!readOnly && variant === "expense" ? (
                       <button
-                        onClick={() => { setAddingTo(addingTo === entry.id ? null : entry.id); setNewTx(emptyTx()); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!isExpanded) toggleRow(entry.id);
+                          setAddingTo(addingTo === entry.id ? null : entry.id);
+                          setNewTx(emptyTx());
+                        }}
                         className="p-1 rounded text-foreground/50 hover:text-foreground hover:bg-muted transition-colors shrink-0"
                         aria-label="Add transaction"
                       >
@@ -251,11 +279,11 @@ export function BudgetTable({
               </div>
 
               {/* ── Transaction sub-rows (recording mode, expense only) ── */}
-              {isRecording && variant === "expense" && (entry.transactions ?? []).map((tx) => {
+              {isExpanded && (entry.transactions ?? []).map((tx) => {
                 const fromLabel = incomeEntries.find((e) => e.id === tx.fromIncomeId)?.label ?? "(deleted)";
                 return (
                   <div key={tx.id}
-                    onClick={() => setViewTx({ tx, fromLabel, rowLabel: entry.label })}
+                    onClick={(e) => { e.stopPropagation(); setViewTx({ tx, fromLabel, rowLabel: entry.label }); }}
                     className="flex items-start gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors">
                     <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
                       <span className="tabular-nums text-foreground font-medium">{fmt(tx.amount)}</span>
@@ -282,7 +310,7 @@ export function BudgetTable({
               })}
 
               {/* ── Add transaction form ───────────────────────────────── */}
-              {isRecording && variant === "expense" && addingTo === entry.id && (
+              {isExpanded && addingTo === entry.id && (
                 <div className="flex flex-wrap items-center gap-2 px-4 py-2 bg-muted/20 border-t border-border">
                   <input
                     type="number" placeholder="Amount" min="0" step="0.01"
