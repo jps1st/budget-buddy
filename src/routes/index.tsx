@@ -1601,6 +1601,7 @@ function BudgetApp() {
                 total={displayTotalExpenses}
                 mode={budgetMode}
                 incomeEntries={budgetMode === "recording" ? active.income.filter((e) => e.label.trim() !== "" && e.amount > 0) : undefined}
+                incomeRemaining={budgetMode === "recording" ? incomeRemainingMap : undefined}
                 readOnly={!!active.syncSource && !active.syncSource.canWrite}
               />
             </div>

@@ -30,6 +30,7 @@ interface Props {
   mode?: "editing" | "recording";
   incomeEntries?: Entry[];          // expense table only: drives the "from" dropdown
   remainingOverrides?: Record<string, number>; // income table only: pre-computed remaining per entry id
+  incomeRemaining?: Record<string, number>;    // expense table only: remaining per income entry id for overspend check
 }
 
 const variantClasses: Record<Variant, string> = {
@@ -43,11 +44,17 @@ function todayISO() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function formatTxDate(iso: string): string {
+  const [, m, d] = iso.split("-");
+  return `${MONTHS[parseInt(m, 10) - 1]} ${parseInt(d, 10)}`;
+}
+
 const emptyTx = () => ({ amount: "", fromId: "", date: todayISO(), description: "" });
 
 export function BudgetTable({
   title, variant, entries, onChange, totalLabel, total,
-  readOnly, mode = "editing", incomeEntries = [], remainingOverrides,
+  readOnly, mode = "editing", incomeEntries = [], remainingOverrides, incomeRemaining,
 }: Props) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
@@ -55,6 +62,7 @@ export function BudgetTable({
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [newTx, setNewTx] = useState<{ amount: string; fromId: string; date: string; description: string }>(emptyTx);
   const [viewTx, setViewTx] = useState<{ tx: Transaction; fromLabel: string; rowLabel: string } | null>(null);
+  const [overspendWarn, setOverspendWarn] = useState<{ entryId: string; message: string } | null>(null);
 
   const updateEntry = (id: string, patch: Partial<Entry>) =>
     onChange(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -80,9 +88,21 @@ export function BudgetTable({
     onChange(result, true);
   };
 
-  const commitTx = (entryId: string) => {
+  const commitTx = (entryId: string, force = false) => {
     const amt = parseFloat(newTx.amount);
     if (!amt || !newTx.fromId || !newTx.date) return;
+
+    if (!force && incomeRemaining) {
+      const rem = incomeRemaining[newTx.fromId];
+      if (rem !== undefined && amt > rem) {
+        const label = incomeEntries.find((e) => e.id === newTx.fromId)?.label ?? "this source";
+        const excess = (amt - rem).toFixed(2);
+        setOverspendWarn({ entryId, message: `This exceeds the remaining balance of "${label}" by ${excess}.` });
+        return;
+      }
+    }
+
+    setOverspendWarn(null);
     const tx: Transaction = {
       id: crypto.randomUUID(),
       amount: amt,
@@ -225,7 +245,7 @@ export function BudgetTable({
                       <span>from</span>
                       <span className="font-medium text-foreground">{fromLabel}</span>
                       <span className="text-muted-foreground/60">·</span>
-                      <span>{tx.date}</span>
+                      <span>{formatTxDate(tx.date)}</span>
                       {tx.description && (
                         <>
                           <span className="text-muted-foreground/60">·</span>
@@ -280,10 +300,25 @@ export function BudgetTable({
                     className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                     Add
                   </button>
-                  <button onClick={() => setAddingTo(null)}
+                  <button onClick={() => { setAddingTo(null); setOverspendWarn(null); }}
                     className="text-xs px-2 py-1.5 rounded border border-border hover:bg-muted transition-colors">
                     Cancel
                   </button>
+                  {overspendWarn?.entryId === entry.id && (
+                    <div className="w-full rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive">
+                      <p className="mb-2">{overspendWarn.message} Add anyway?</p>
+                      <div className="flex gap-2">
+                        <button onClick={() => commitTx(entry.id, true)}
+                          className="px-2.5 py-1 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors">
+                          Yes, add
+                        </button>
+                        <button onClick={() => setOverspendWarn(null)}
+                          className="px-2.5 py-1 rounded border border-destructive/40 hover:bg-destructive/10 transition-colors">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
