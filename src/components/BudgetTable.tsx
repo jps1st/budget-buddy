@@ -259,7 +259,7 @@ export function BudgetTable({
                     className="flex items-start gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors">
                     <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
                       <span className="tabular-nums text-foreground font-medium">{fmt(tx.amount)}</span>
-                      <span>from</span>
+                      <span>←</span>
                       <span className="font-medium text-foreground">{fromLabel}</span>
                       <span className="text-muted-foreground/60">·</span>
                       <span>{formatTxDate(tx.date)}</span>
@@ -377,7 +377,7 @@ export function BudgetTable({
                 <div className="text-sm font-medium">{viewTx.rowLabel || "—"}</div>
               </div>
               <div className="rounded-md bg-muted/50 px-4 py-3">
-                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Drawn from</div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">← From</div>
                 <div className="text-sm font-medium">{viewTx.fromLabel}</div>
               </div>
               {viewTx.tx.description && (
