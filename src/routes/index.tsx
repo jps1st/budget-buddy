@@ -25,6 +25,8 @@ import {
   FolderOpen,
   FolderClosed,
   FolderPlus,
+  PencilLine,
+  Receipt,
 } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
@@ -942,6 +944,8 @@ function BudgetApp() {
     setBudgets((arr) => arr.filter((x) => x.id !== b.id));
   };
 
+  const [budgetMode, setBudgetMode] = useState<"editing" | "recording">("editing");
+
   const totalIncome = useMemo(
     () => (active?.income ?? []).reduce((s, e) => s + (e.amount || 0), 0),
     [active?.income],
@@ -950,6 +954,38 @@ function BudgetApp() {
     () => (active?.expenses ?? []).reduce((s, e) => s + (e.amount || 0), 0),
     [active?.expenses],
   );
+
+  // Recording-mode: remaining per income entry (income amount minus all transactions drawing from it)
+  const incomeRemainingMap = useMemo<Record<string, number>>(() => {
+    if (budgetMode !== "recording") return {};
+    const drawn: Record<string, number> = {};
+    for (const exp of active?.expenses ?? []) {
+      for (const tx of exp.transactions ?? []) {
+        drawn[tx.fromIncomeId] = (drawn[tx.fromIncomeId] ?? 0) + tx.amount;
+      }
+    }
+    const result: Record<string, number> = {};
+    for (const inc of active?.income ?? []) {
+      result[inc.id] = inc.amount - (drawn[inc.id] ?? 0);
+    }
+    return result;
+  }, [budgetMode, active?.income, active?.expenses]);
+
+  const totalIncomeRecording = useMemo(
+    () => Object.values(incomeRemainingMap).reduce((s, v) => s + v, 0),
+    [incomeRemainingMap],
+  );
+  const totalExpensesRecording = useMemo(
+    () => (active?.expenses ?? []).reduce((s, e) => {
+      const spent = (e.transactions ?? []).reduce((sum, t) => sum + t.amount, 0);
+      return s + (e.amount - spent);
+    }, 0),
+    [active?.expenses],
+  );
+
+  const displayTotalIncome   = budgetMode === "recording" ? totalIncomeRecording   : totalIncome;
+  const displayTotalExpenses = budgetMode === "recording" ? totalExpensesRecording : totalExpenses;
+
   const leftover = totalIncome - totalExpenses;
 
   const chartData = [
@@ -1513,6 +1549,18 @@ function BudgetApp() {
               readOnly={!!active.syncSource && !active.syncSource.canWrite}
               className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60 read-only:cursor-default"
             />
+            <button
+              onClick={() => setBudgetMode((m) => m === "editing" ? "recording" : "editing")}
+              className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                budgetMode === "editing"
+                  ? "bg-muted text-foreground border-border hover:bg-muted/70"
+                  : "bg-primary/10 text-primary border-primary/30 hover:bg-primary/20"
+              }`}
+            >
+              {budgetMode === "editing"
+                ? <><PencilLine className="size-3" /> Editing budget</>
+                : <><Receipt className="size-3" /> Recording transactions</>}
+            </button>
             {active.syncSource && (
               <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
                 <Link2 className="size-3 shrink-0" />
@@ -1538,16 +1586,22 @@ function BudgetApp() {
                 variant="income"
                 entries={active.income}
                 onChange={(income, immediate) => updateActive({ income }, immediate)}
-                totalLabel="Total income"
-                total={totalIncome}
+                totalLabel={budgetMode === "recording" ? "Remaining income" : "Total income"}
+                total={displayTotalIncome}
+                mode={budgetMode}
+                remainingOverrides={budgetMode === "recording" ? incomeRemainingMap : undefined}
+                readOnly={budgetMode === "recording" || (!!active.syncSource && !active.syncSource.canWrite)}
               />
               <BudgetTable
                 title="Money Out"
                 variant="expense"
                 entries={active.expenses}
                 onChange={(expenses, immediate) => updateActive({ expenses }, immediate)}
-                totalLabel="Total expenses"
-                total={totalExpenses}
+                totalLabel={budgetMode === "recording" ? "Remaining budget" : "Total expenses"}
+                total={displayTotalExpenses}
+                mode={budgetMode}
+                incomeEntries={budgetMode === "recording" ? active.income : undefined}
+                readOnly={!!active.syncSource && !active.syncSource.canWrite}
               />
             </div>
 
