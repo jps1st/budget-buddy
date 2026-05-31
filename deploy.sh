@@ -3,10 +3,17 @@ set -euo pipefail
 
 ssh node10 bash << 'REMOTE'
   set -euo pipefail
+
+  # Load nvm if available
+  export NVM_DIR="$HOME/.nvm"
+  [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+
   cd ~/budget-buddy
 
   echo "==> Pulling latest changes..."
   git pull
+
+  node --version
 
   echo "==> Installing dependencies..."
   npm ci --prefer-offline
