@@ -1607,7 +1607,7 @@ function BudgetApp() {
               />
             </div>
 
-            {budgetMode === "recording" && <div className="space-y-6">
+            {budgetMode === "editing" && <div className="space-y-6">
               <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
                 <div className="bg-leftover text-leftover-foreground px-4 py-2.5 text-sm font-semibold tracking-wide uppercase">
                   Money Left Over
