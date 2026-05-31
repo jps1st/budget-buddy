@@ -22,6 +22,9 @@ import {
   Link2,
   Loader2,
   Check,
+  FolderOpen,
+  FolderClosed,
+  FolderPlus,
 } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
@@ -46,8 +49,12 @@ import {
   getMeta,
   setActiveId as persistActiveId,
   getDeviceId,
+  loadAllWorkspaces,
+  putWorkspace,
+  deleteWorkspaceIDB,
   type BudgetRow,
   type BudgetSnapshot,
+  type WorkspaceRow,
 } from "@/lib/budget-storage";
 import {
   syncOwnedBudgets,
@@ -55,7 +62,17 @@ import {
   revokeShareLinks,
   fetchByToken,
   updateByToken,
+  createWorkspace,
+  listWorkspaces,
+  renameWorkspace,
+  deleteWorkspaceAPI,
+  addBudgetToWorkspace,
+  removeBudgetFromWorkspace,
+  getWorkspaceLinks,
+  revokeWorkspaceLinks,
+  updateWorkspaceByToken,
   type ShareLinks,
+  type WorkspaceLinks,
 } from "@/lib/sync-api";
 
 function uuid(): string {
@@ -176,6 +193,16 @@ function BudgetApp() {
   const [roCopied, setRoCopied] = useState(false);
   const [rwCopied, setRwCopied] = useState(false);
 
+  // Workspace state
+  const [workspaces, setWorkspaces] = useState<WorkspaceRow[]>([]);
+  const [expandedWs, setExpandedWs] = useState<Set<string>>(new Set());
+  const [wsShareOpen, setWsShareOpen] = useState<string | null>(null);
+  const [wsShareLinks, setWsShareLinks] = useState<WorkspaceLinks | null>(null);
+  const [wsShareLoading, setWsShareLoading] = useState(false);
+  const [wsRoCopied, setWsRoCopied] = useState(false);
+  const [wsRwCopied, setWsRwCopied] = useState(false);
+  const [moveToWsTarget, setMoveToWsTarget] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const budgetsRef = useRef<BudgetRow[]>([]);
   const burstSnapRef = useRef<BudgetSnapshot | null>(null);
@@ -219,6 +246,11 @@ function BudgetApp() {
       }
 
       setLoaded(true);
+
+      // Load workspaces
+      const wsRows = await loadAllWorkspaces();
+      setWorkspaces(wsRows.sort((a, b) => a.order - b.order));
+      if (did) void syncWorkspaces(did, wsRows);
 
       // Initial remote sync in background
       void doInitialSync(did, finalRows);
@@ -266,6 +298,24 @@ function BudgetApp() {
 
     // Also refresh shared budgets
     await refreshSharedBudgets(merged);
+  };
+
+  const syncWorkspaces = async (did: string, localWs: WorkspaceRow[]) => {
+    const serverWs = await listWorkspaces(did);
+    if (!serverWs) return;
+    const merged: WorkspaceRow[] = serverWs.map((sw) => ({
+      id: sw.id,
+      name: sw.name,
+      budgetIds: sw.budgetIds,
+      order: localWs.find((lw) => lw.id === sw.id)?.order ?? Date.now(),
+    }));
+    for (const lw of localWs) {
+      if (lw.syncSource && !merged.find((m) => m.id === lw.id)) {
+        merged.push(lw);
+      }
+    }
+    for (const w of merged) await putWorkspace(w);
+    setWorkspaces(merged.sort((a, b) => a.order - b.order));
   };
 
   const refreshSharedBudgets = async (currentBudgets: BudgetRow[]) => {
@@ -511,7 +561,6 @@ function BudgetApp() {
           id: b.id,
           data: serializeForSync(b),
           updatedAt: b.updatedAt,
-          shareCode: b.shareCode ?? null,
         }));
       const result = await syncOwnedBudgets(did, toSync);
       if (!result) ok = false;
@@ -520,13 +569,23 @@ function BudgetApp() {
     for (const localId of sharedKeys) {
       const b = budgetsRef.current.find((x) => x.id === localId);
       if (!b?.syncSource?.canWrite || !did) continue;
-      const success = await updateByToken(
-        b.syncSource.token,
-        did,
-        serializeForSync(b),
-        b.updatedAt,
-      );
-      if (!success) ok = false;
+      if (b.syncSource.workspaceBudgetId) {
+        const success = await updateWorkspaceByToken(
+          b.syncSource.token,
+          b.syncSource.workspaceBudgetId,
+          serializeForSync(b),
+          b.updatedAt,
+        );
+        if (!success) ok = false;
+      } else {
+        const success = await updateByToken(
+          b.syncSource.token,
+          did,
+          serializeForSync(b),
+          b.updatedAt,
+        );
+        if (!success) ok = false;
+      }
     }
 
     setSyncStatus(ok ? "synced" : "error");
@@ -870,6 +929,69 @@ function BudgetApp() {
     setShareLinksLoading(false);
   };
 
+  const createNewWorkspace = async () => {
+    if (!deviceId) return;
+    const name = "New workspace";
+    const result = await createWorkspace(name, deviceId);
+    if (!result) return;
+    const wRow: WorkspaceRow = { id: result.id, name: result.name, budgetIds: [], order: Date.now() };
+    await putWorkspace(wRow);
+    setWorkspaces((ws) => [...ws, wRow]);
+    setExpandedWs((s) => new Set([...s, wRow.id]));
+  };
+
+  const renameWorkspaceFn = async (id: string, name: string) => {
+    if (!deviceId) return;
+    await renameWorkspace(id, name, deviceId);
+    setWorkspaces((ws) => ws.map((w) => (w.id === id ? { ...w, name } : w)));
+    const current = workspaces.find((w) => w.id === id);
+    if (current) await putWorkspace({ ...current, name });
+  };
+
+  const deleteWorkspaceFn = async (id: string) => {
+    if (!deviceId) return;
+    await deleteWorkspaceAPI(id, deviceId);
+    await deleteWorkspaceIDB(id);
+    setWorkspaces((ws) => ws.filter((w) => w.id !== id));
+  };
+
+  const assignBudgetToWorkspace = async (budgetId: string, workspaceId: string) => {
+    if (!deviceId) return;
+    for (const w of workspaces) {
+      if (w.budgetIds.includes(budgetId) && w.id !== workspaceId) {
+        await removeBudgetFromWorkspace(w.id, budgetId, deviceId);
+        const updated = { ...w, budgetIds: w.budgetIds.filter((id) => id !== budgetId) };
+        await putWorkspace(updated);
+        setWorkspaces((ws) => ws.map((x) => (x.id === w.id ? updated : x)));
+      }
+    }
+    if (workspaceId === "") return;
+    await addBudgetToWorkspace(workspaceId, budgetId, deviceId);
+    const target = workspaces.find((w) => w.id === workspaceId);
+    if (!target || target.budgetIds.includes(budgetId)) return;
+    const updated = { ...target, budgetIds: [...target.budgetIds, budgetId] };
+    await putWorkspace(updated);
+    setWorkspaces((ws) => ws.map((x) => (x.id === workspaceId ? updated : x)));
+  };
+
+  const openWsShareDialog = async (workspaceId: string) => {
+    setWsShareLinks(null);
+    setWsShareOpen(workspaceId);
+    if (!deviceId) return;
+    setWsShareLoading(true);
+    const links = await getWorkspaceLinks(workspaceId, deviceId);
+    setWsShareLinks(links);
+    setWsShareLoading(false);
+  };
+
+  const handleRevokeWsLinks = async () => {
+    if (!wsShareOpen || !deviceId) return;
+    setWsShareLoading(true);
+    await revokeWorkspaceLinks(wsShareOpen, deviceId);
+    setWsShareLinks(null);
+    setWsShareLoading(false);
+  };
+
   const copyLink = (text: string, setCopied: (v: boolean) => void) => {
     void navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
@@ -919,87 +1041,273 @@ function BudgetApp() {
           </div>
 
           <nav className="flex-1 overflow-y-auto py-1">
-            {openBudgets.map((b, idx) => {
-              const isActive = b.id === active.id;
-              const isShared = !!b.syncSource;
-              return (
-                <div
-                  key={b.id}
-                  onClick={() => setActiveIdState(b.id)}
-                  className={`group flex items-center gap-1 px-2 py-1.5 mx-1 rounded cursor-pointer transition-colors ${
-                    isActive
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                  }`}
-                >
-                  {isShared && (
-                    <span title="Shared budget"><Link2 className="size-3 shrink-0 text-muted-foreground/60" /></span>
-                  )}
-                  <span className="flex-1 text-sm truncate">{b.title || "Untitled"}</span>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        onClick={(e) => e.stopPropagation()}
-                        className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
-                        aria-label="Budget options"
-                      >
-                        <MoreHorizontal className="size-3.5" />
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      <DropdownMenuItem
-                        disabled={idx === 0}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void moveTab(b.id, -1);
-                        }}
-                      >
-                        <ChevronUp className="size-3.5 mr-2" /> Move up
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={idx === openBudgets.length - 1}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void moveTab(b.id, 1);
-                        }}
-                      >
-                        <ChevronDown className="size-3.5 mr-2" /> Move down
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          duplicateTab(b);
-                        }}
-                      >
-                        <Copy className="size-3.5 mr-2" /> Duplicate
-                      </DropdownMenuItem>
-                      {!isShared && (
+            {openBudgets
+              .filter((b) => !workspaces.some((w) => w.budgetIds.includes(b.id)))
+              .map((b) => {
+                const isActive = b.id === active.id;
+                const isShared = !!b.syncSource;
+                const globalIdx = openBudgets.findIndex((x) => x.id === b.id);
+                return (
+                  <div
+                    key={b.id}
+                    onClick={() => setActiveIdState(b.id)}
+                    className={`group flex items-center gap-1 px-2 py-1.5 mx-1 rounded cursor-pointer transition-colors ${
+                      isActive
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                    }`}
+                  >
+                    {isShared && (
+                      <span title="Shared budget"><Link2 className="size-3 shrink-0 text-muted-foreground/60" /></span>
+                    )}
+                    <span className="flex-1 text-sm truncate">{b.title || "Untitled"}</span>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          onClick={(e) => e.stopPropagation()}
+                          className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
+                          aria-label="Budget options"
+                        >
+                          <MoreHorizontal className="size-3.5" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start">
+                        <DropdownMenuItem
+                          disabled={globalIdx === 0}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void moveTab(b.id, -1);
+                          }}
+                        >
+                          <ChevronUp className="size-3.5 mr-2" /> Move up
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          disabled={globalIdx === openBudgets.length - 1}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void moveTab(b.id, 1);
+                          }}
+                        >
+                          <ChevronDown className="size-3.5 mr-2" /> Move down
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
                         <DropdownMenuItem
                           onClick={(e) => {
                             e.stopPropagation();
-                            void openShareDialog(b.id);
+                            duplicateTab(b);
                           }}
                         >
-                          <Share2 className="size-3.5 mr-2" /> Share
+                          <Copy className="size-3.5 mr-2" /> Duplicate
                         </DropdownMenuItem>
-                      )}
-                      <DropdownMenuItem
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          requestCloseTab(b);
-                        }}
-                      >
-                        <Archive className="size-3.5 mr-2" /> Archive
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                        {!isShared && (
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void openShareDialog(b.id);
+                            }}
+                          >
+                            <Share2 className="size-3.5 mr-2" /> Share
+                          </DropdownMenuItem>
+                        )}
+                        {!isShared && workspaces.length > 0 && (
+                          <>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMoveToWsTarget(b.id);
+                              }}
+                            >
+                              <FolderPlus className="size-3.5 mr-2" /> Move to workspace
+                            </DropdownMenuItem>
+                          </>
+                        )}
+                        <DropdownMenuItem
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            requestCloseTab(b);
+                          }}
+                        >
+                          <Archive className="size-3.5 mr-2" /> Archive
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                );
+              })}
+
+            {workspaces.map((ws) => {
+              const wsBudgets = ws.budgetIds
+                .map((bid) => openBudgets.find((b) => b.id === bid))
+                .filter(Boolean) as BudgetRow[];
+              const expanded = expandedWs.has(ws.id);
+              return (
+                <div key={ws.id}>
+                  <div
+                    className="group flex items-center gap-1 px-2 py-1.5 mx-1 rounded cursor-pointer hover:bg-muted/50 transition-colors"
+                    onClick={() =>
+                      setExpandedWs((s) => {
+                        const n = new Set(s);
+                        n.has(ws.id) ? n.delete(ws.id) : n.add(ws.id);
+                        return n;
+                      })
+                    }
+                  >
+                    {expanded ? (
+                      <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="flex-1 text-sm truncate text-muted-foreground">{ws.name}</span>
+                    {!ws.syncSource && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            onClick={(e) => e.stopPropagation()}
+                            className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
+                            aria-label="Workspace options"
+                          >
+                            <MoreHorizontal className="size-3.5" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start">
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void openWsShareDialog(ws.id);
+                            }}
+                          >
+                            <Share2 className="size-3.5 mr-2" /> Share workspace
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const name = prompt("Rename workspace", ws.name);
+                              if (name?.trim()) void renameWorkspaceFn(ws.id, name.trim());
+                            }}
+                          >
+                            Rename
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm(`Delete workspace "${ws.name}"? Budgets will not be deleted.`))
+                                void deleteWorkspaceFn(ws.id);
+                            }}
+                          >
+                            Delete folder
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </div>
+                  {expanded &&
+                    wsBudgets.map((b) => {
+                      const isActive = b.id === active.id;
+                      const isShared = !!b.syncSource;
+                      const globalIdx = openBudgets.findIndex((x) => x.id === b.id);
+                      return (
+                        <div key={b.id} className="pl-4">
+                          <div
+                            onClick={() => setActiveIdState(b.id)}
+                            className={`group flex items-center gap-1 px-2 py-1.5 mx-1 rounded cursor-pointer transition-colors ${
+                              isActive
+                                ? "bg-muted text-foreground"
+                                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                            }`}
+                          >
+                            {isShared && (
+                              <span title="Shared budget"><Link2 className="size-3 shrink-0 text-muted-foreground/60" /></span>
+                            )}
+                            <span className="flex-1 text-sm truncate">{b.title || "Untitled"}</span>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-muted rounded p-0.5 transition-opacity"
+                                  aria-label="Budget options"
+                                >
+                                  <MoreHorizontal className="size-3.5" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="start">
+                                <DropdownMenuItem
+                                  disabled={globalIdx === 0}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void moveTab(b.id, -1);
+                                  }}
+                                >
+                                  <ChevronUp className="size-3.5 mr-2" /> Move up
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  disabled={globalIdx === openBudgets.length - 1}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void moveTab(b.id, 1);
+                                  }}
+                                >
+                                  <ChevronDown className="size-3.5 mr-2" /> Move down
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    duplicateTab(b);
+                                  }}
+                                >
+                                  <Copy className="size-3.5 mr-2" /> Duplicate
+                                </DropdownMenuItem>
+                                {!isShared && (
+                                  <DropdownMenuItem
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void openShareDialog(b.id);
+                                    }}
+                                  >
+                                    <Share2 className="size-3.5 mr-2" /> Share
+                                  </DropdownMenuItem>
+                                )}
+                                {!isShared && (
+                                  <>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMoveToWsTarget(b.id);
+                                      }}
+                                    >
+                                      <FolderPlus className="size-3.5 mr-2" /> Move to workspace
+                                    </DropdownMenuItem>
+                                  </>
+                                )}
+                                <DropdownMenuItem
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    requestCloseTab(b);
+                                  }}
+                                >
+                                  <Archive className="size-3.5 mr-2" /> Archive
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        </div>
+                      );
+                    })}
                 </div>
               );
             })}
           </nav>
 
           <div className="border-t border-border p-2 space-y-0.5">
+            <button
+              onClick={() => void createNewWorkspace()}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+            >
+              <FolderPlus className="size-4" /> New workspace
+            </button>
             <button
               onClick={newBudget}
               className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
@@ -1292,6 +1600,103 @@ function BudgetApp() {
               </ul>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Move to workspace dialog ───────────────────────────────── */}
+      <Dialog open={!!moveToWsTarget} onOpenChange={(o) => { if (!o) setMoveToWsTarget(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Move to workspace</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1">
+            {workspaces.filter((w) => !w.syncSource).map((ws) => (
+              <button
+                key={ws.id}
+                onClick={() => { void assignBudgetToWorkspace(moveToWsTarget!, ws.id); setMoveToWsTarget(null); }}
+                className="w-full text-left px-3 py-2 rounded hover:bg-muted text-sm flex items-center gap-2"
+              >
+                <FolderClosed className="size-4" /> {ws.name}
+              </button>
+            ))}
+            {workspaces.filter((w) => !w.syncSource).length === 0 && (
+              <p className="text-sm text-muted-foreground px-3">No workspaces yet. Create one first.</p>
+            )}
+          </div>
+          {workspaces.some((w) => w.budgetIds.includes(moveToWsTarget ?? "")) && (
+            <button
+              onClick={() => { void assignBudgetToWorkspace(moveToWsTarget!, ""); setMoveToWsTarget(null); }}
+              className="w-full text-left px-3 py-2 rounded hover:bg-muted text-sm text-muted-foreground"
+            >
+              Remove from workspace
+            </button>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Workspace share dialog ─────────────────────────────────── */}
+      <Dialog open={!!wsShareOpen} onOpenChange={(o) => { if (!o) setWsShareOpen(null); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Share workspace</DialogTitle>
+            <DialogDescription>
+              Share this workspace folder. Read-only viewers can see all budgets. Editors can also make changes.
+            </DialogDescription>
+          </DialogHeader>
+          {wsShareLoading && (
+            <div className="flex justify-center py-6">
+              <Loader2 className="size-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          {!wsShareLoading && wsShareLinks && (
+            <div className="space-y-3">
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-1">Read-only link</div>
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    value={`${shareBase}/share/w/${wsShareLinks.roToken}`}
+                    className="flex-1 min-w-0 text-xs font-mono bg-muted/40 border border-border rounded-md px-2 py-1.5 text-muted-foreground truncate outline-none"
+                  />
+                  <button
+                    onClick={() => copyLink(`${shareBase}/share/w/${wsShareLinks.roToken}`, setWsRoCopied)}
+                    className="shrink-0 inline-flex items-center gap-1 border border-border rounded-md px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  >
+                    {wsRoCopied ? <Check className="size-3 text-emerald-500" /> : <Link2 className="size-3" />}
+                    {wsRoCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-muted-foreground mb-1">Editor link</div>
+                <div className="flex gap-2">
+                  <input
+                    readOnly
+                    value={`${shareBase}/share/w/${wsShareLinks.rwToken}`}
+                    className="flex-1 min-w-0 text-xs font-mono bg-muted/40 border border-border rounded-md px-2 py-1.5 text-muted-foreground truncate outline-none"
+                  />
+                  <button
+                    onClick={() => copyLink(`${shareBase}/share/w/${wsShareLinks.rwToken}`, setWsRwCopied)}
+                    className="shrink-0 inline-flex items-center gap-1 border border-border rounded-md px-2 py-1.5 text-xs hover:bg-muted transition-colors"
+                  >
+                    {wsRwCopied ? <Check className="size-3 text-emerald-500" /> : <Link2 className="size-3" />}
+                    {wsRwCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={() => void handleRevokeWsLinks()}
+                className="w-full inline-flex items-center justify-center gap-2 border border-destructive/40 text-destructive rounded-md px-3 py-2 text-sm hover:bg-destructive/10 transition-colors mt-1"
+              >
+                Revoke all workspace links
+              </button>
+            </div>
+          )}
+          {!wsShareLoading && !wsShareLinks && wsShareOpen && (
+            <p className="text-sm text-muted-foreground text-center py-2">
+              Failed to generate links. Check your connection and try again.
+            </p>
+          )}
         </DialogContent>
       </Dialog>
 

@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ShareTokenRouteImport } from './routes/share.$token'
+import { Route as ShareWTokenRouteImport } from './routes/share.w.$token'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +23,40 @@ const ShareTokenRoute = ShareTokenRouteImport.update({
   path: '/share/$token',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ShareWTokenRoute = ShareWTokenRouteImport.update({
+  id: '/share/w/$token',
+  path: '/share/w/$token',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/share/$token': typeof ShareTokenRoute
+  '/share/w/$token': typeof ShareWTokenRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/share/$token': typeof ShareTokenRoute
+  '/share/w/$token': typeof ShareWTokenRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/share/$token': typeof ShareTokenRoute
+  '/share/w/$token': typeof ShareWTokenRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/share/$token'
+  fullPaths: '/' | '/share/$token' | '/share/w/$token'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/share/$token'
-  id: '__root__' | '/' | '/share/$token'
+  to: '/' | '/share/$token' | '/share/w/$token'
+  id: '__root__' | '/' | '/share/$token' | '/share/w/$token'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ShareTokenRoute: typeof ShareTokenRoute
+  ShareWTokenRoute: typeof ShareWTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,16 +75,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShareTokenRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/share/w/$token': {
+      id: '/share/w/$token'
+      path: '/share/w/$token'
+      fullPath: '/share/w/$token'
+      preLoaderRoute: typeof ShareWTokenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ShareTokenRoute: ShareTokenRoute,
+  ShareWTokenRoute: ShareWTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
+
 
 import type { getRouter } from './router.tsx'
 import type { startInstance } from './start.ts'
