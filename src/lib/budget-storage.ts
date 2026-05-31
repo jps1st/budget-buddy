@@ -11,6 +11,15 @@ export type BudgetSnapshot = {
 export type SyncSource = {
   token: string;
   canWrite: boolean;
+  workspaceBudgetId?: string;
+};
+
+export type WorkspaceRow = {
+  id: string;
+  name: string;
+  budgetIds: string[];
+  order: number;
+  syncSource?: { token: string; canWrite: boolean };
 };
 
 export type BudgetRow = {
@@ -34,23 +43,31 @@ export interface Meta {
 }
 
 const DB_NAME = "budget-app";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_BUDGETS = "budgets";
 const STORE_META = "meta";
+export const STORE_WORKSPACES = "workspaces";
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
 function getDB() {
   if (!dbPromise) {
     dbPromise = openDB(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains(STORE_BUDGETS)) {
-          const s = db.createObjectStore(STORE_BUDGETS, { keyPath: "id" });
-          s.createIndex("archived", "archived");
-          s.createIndex("order", "order");
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          if (!db.objectStoreNames.contains(STORE_BUDGETS)) {
+            const s = db.createObjectStore(STORE_BUDGETS, { keyPath: "id" });
+            s.createIndex("archived", "archived");
+            s.createIndex("order", "order");
+          }
+          if (!db.objectStoreNames.contains(STORE_META)) {
+            db.createObjectStore(STORE_META);
+          }
         }
-        if (!db.objectStoreNames.contains(STORE_META)) {
-          db.createObjectStore(STORE_META);
+        if (oldVersion < 2) {
+          if (!db.objectStoreNames.contains(STORE_WORKSPACES)) {
+            db.createObjectStore(STORE_WORKSPACES, { keyPath: "id" });
+          }
         }
       },
     });
@@ -82,6 +99,21 @@ export async function getMeta(): Promise<Meta> {
 export async function setActiveId(activeId: string | null): Promise<void> {
   const db = await getDB();
   await db.put(STORE_META, activeId, "activeId");
+}
+
+export async function loadAllWorkspaces(): Promise<WorkspaceRow[]> {
+  const db = await getDB();
+  return (await db.getAll(STORE_WORKSPACES)) as WorkspaceRow[];
+}
+
+export async function putWorkspace(w: WorkspaceRow): Promise<void> {
+  const db = await getDB();
+  await db.put(STORE_WORKSPACES, w);
+}
+
+export async function deleteWorkspaceIDB(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete(STORE_WORKSPACES, id);
 }
 
 export async function getDeviceId(): Promise<string> {

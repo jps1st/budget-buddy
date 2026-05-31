@@ -22,6 +22,19 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_budgets_owner ON budgets(owner_device_id);
   DROP TABLE IF EXISTS budget_access;
+  CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    owner_device_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_workspaces_owner ON workspaces(owner_device_id);
+  CREATE TABLE IF NOT EXISTS workspace_budgets (
+    workspace_id TEXT NOT NULL,
+    budget_id TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, budget_id)
+  );
 `);
 
 // Idempotent migrations: SQLite doesn't support UNIQUE on ALTER TABLE ADD COLUMN,
@@ -34,6 +47,14 @@ for (const [col, idx] of [
   [
     "ALTER TABLE budgets ADD COLUMN rw_token TEXT",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_budgets_rw_token ON budgets(rw_token) WHERE rw_token IS NOT NULL",
+  ],
+  [
+    "ALTER TABLE workspaces ADD COLUMN ro_token TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_ro_token ON workspaces(ro_token) WHERE ro_token IS NOT NULL",
+  ],
+  [
+    "ALTER TABLE workspaces ADD COLUMN rw_token TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_workspaces_rw_token ON workspaces(rw_token) WHERE rw_token IS NOT NULL",
   ],
 ] as [string, string][]) {
   try { db.exec(col); } catch { /* column already exists */ }
@@ -144,6 +165,14 @@ function generateToken(): string {
   return Array.from({ length: 32 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
+function generateUUID(): string {
+  const hex = "0123456789abcdef";
+  const s = Array.from({ length: 32 }, () => hex[Math.floor(Math.random() * 16)]);
+  s[12] = "4";
+  s[16] = hex[(parseInt(s[16], 16) & 0x3) | 0x8];
+  return `${s.slice(0, 8).join("")}-${s.slice(8, 12).join("")}-${s.slice(12, 16).join("")}-${s.slice(16, 20).join("")}-${s.slice(20).join("")}`;
+}
+
 // ─── DB row types ─────────────────────────────────────────────────────────────
 
 type DbBudget = {
@@ -153,6 +182,15 @@ type DbBudget = {
   rw_token: string | null;
   data: string;
   updated_at: number;
+};
+
+type DbWorkspace = {
+  id: string;
+  owner_device_id: string;
+  name: string;
+  updated_at: number;
+  ro_token: string | null;
+  rw_token: string | null;
 };
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
@@ -338,6 +376,170 @@ function handleWatch(token: string): Response {
   });
 }
 
+// POST /api/workspaces
+async function handleCreateWorkspace(deviceId: string, request: Request): Promise<Response> {
+  let body: { name: string };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  if (typeof body?.name !== "string" || !body.name.trim()) return json({ error: "Invalid body" }, 400);
+  const id = generateUUID();
+  const now = Date.now();
+  db.prepare("INSERT INTO workspaces (id, owner_device_id, name, updated_at) VALUES (?, ?, ?, ?)")
+    .run(id, deviceId, body.name.trim(), now);
+  return json({ id, name: body.name.trim(), budgetIds: [] });
+}
+
+// GET /api/workspaces
+function handleListWorkspaces(deviceId: string): Response {
+  const rows = db.prepare("SELECT id, name FROM workspaces WHERE owner_device_id = ? ORDER BY updated_at ASC")
+    .all(deviceId) as { id: string; name: string }[];
+  const result = rows.map((w) => {
+    const budgetRows = db.prepare("SELECT budget_id FROM workspace_budgets WHERE workspace_id = ? ORDER BY position ASC")
+      .all(w.id) as { budget_id: string }[];
+    return { id: w.id, name: w.name, budgetIds: budgetRows.map((r) => r.budget_id) };
+  });
+  return json(result);
+}
+
+// PATCH /api/workspaces/:id
+async function handleRenameWorkspace(deviceId: string, id: string, request: Request): Promise<Response> {
+  let body: { name: string };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  if (typeof body?.name !== "string" || !body.name.trim()) return json({ error: "Invalid body" }, 400);
+  const ws = db.prepare("SELECT owner_device_id FROM workspaces WHERE id = ?").get(id) as { owner_device_id: string } | undefined;
+  if (!ws) return json({ error: "Not found" }, 404);
+  if (ws.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
+  db.prepare("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?").run(body.name.trim(), Date.now(), id);
+  return json({ ok: true });
+}
+
+// DELETE /api/workspaces/:id
+function handleDeleteWorkspace(deviceId: string, id: string): Response {
+  const ws = db.prepare("SELECT owner_device_id FROM workspaces WHERE id = ?").get(id) as { owner_device_id: string } | undefined;
+  if (!ws) return json({ error: "Not found" }, 404);
+  if (ws.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
+  db.prepare("DELETE FROM workspace_budgets WHERE workspace_id = ?").run(id);
+  db.prepare("DELETE FROM workspaces WHERE id = ?").run(id);
+  return json({ ok: true });
+}
+
+// POST /api/workspaces/:id/budgets
+async function handleAddBudgetToWorkspace(deviceId: string, workspaceId: string, request: Request): Promise<Response> {
+  let body: { budgetId: string };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  if (typeof body?.budgetId !== "string") return json({ error: "Invalid body" }, 400);
+  const ws = db.prepare("SELECT owner_device_id FROM workspaces WHERE id = ?").get(workspaceId) as { owner_device_id: string } | undefined;
+  if (!ws) return json({ error: "Not found" }, 404);
+  if (ws.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
+  const countRow = db.prepare("SELECT COUNT(*) as cnt FROM workspace_budgets WHERE workspace_id = ?").get(workspaceId) as { cnt: number };
+  try {
+    db.prepare("INSERT INTO workspace_budgets (workspace_id, budget_id, position) VALUES (?, ?, ?)").run(workspaceId, body.budgetId, countRow.cnt);
+  } catch { /* already exists */ }
+  return json({ ok: true });
+}
+
+// DELETE /api/workspaces/:id/budgets/:budgetId
+function handleRemoveBudgetFromWorkspace(deviceId: string, workspaceId: string, budgetId: string): Response {
+  const ws = db.prepare("SELECT owner_device_id FROM workspaces WHERE id = ?").get(workspaceId) as { owner_device_id: string } | undefined;
+  if (!ws) return json({ error: "Not found" }, 404);
+  if (ws.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
+  db.prepare("DELETE FROM workspace_budgets WHERE workspace_id = ? AND budget_id = ?").run(workspaceId, budgetId);
+  return json({ ok: true });
+}
+
+// POST /api/workspace/links
+async function handleGetWorkspaceLinks(deviceId: string, request: Request): Promise<Response> {
+  let body: { workspaceId: string };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  const ws = db.prepare("SELECT id, owner_device_id, ro_token, rw_token FROM workspaces WHERE id = ?").get(body.workspaceId) as DbWorkspace | undefined;
+  if (!ws) return json({ error: "Not found" }, 404);
+  if (ws.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
+
+  let roToken = ws.ro_token;
+  let rwToken = ws.rw_token;
+
+  if (!roToken) {
+    roToken = generateToken();
+    db.prepare("UPDATE workspaces SET ro_token = ? WHERE id = ?").run(roToken, body.workspaceId);
+  }
+  if (!rwToken) {
+    rwToken = generateToken();
+    db.prepare("UPDATE workspaces SET rw_token = ? WHERE id = ?").run(rwToken, body.workspaceId);
+  }
+
+  return json({ roToken, rwToken });
+}
+
+// DELETE /api/workspace/links
+async function handleRevokeWorkspaceLinks(deviceId: string, request: Request): Promise<Response> {
+  let body: { workspaceId: string };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  const ws = db.prepare("SELECT owner_device_id FROM workspaces WHERE id = ?").get(body.workspaceId) as { owner_device_id: string } | undefined;
+  if (!ws) return json({ error: "Not found" }, 404);
+  if (ws.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
+  db.prepare("UPDATE workspaces SET ro_token = NULL, rw_token = NULL WHERE id = ?").run(body.workspaceId);
+  return json({ ok: true });
+}
+
+// GET /api/w/:token
+function handleGetWorkspaceByToken(token: string): Response {
+  const ws = db.prepare("SELECT id, name, ro_token, rw_token FROM workspaces WHERE ro_token = ? OR rw_token = ?").get(token, token) as DbWorkspace | undefined;
+  if (!ws) return json({ error: "Not found" }, 404);
+  const canWrite = ws.rw_token === token;
+  const budgetRows = db.prepare(
+    "SELECT wb.budget_id, b.data, b.updated_at FROM workspace_budgets wb LEFT JOIN budgets b ON b.id = wb.budget_id WHERE wb.workspace_id = ? ORDER BY wb.position ASC"
+  ).all(ws.id) as { budget_id: string; data: string | null; updated_at: number | null }[];
+  const budgets = budgetRows
+    .filter((r) => r.data !== null)
+    .map((r) => ({ id: r.budget_id, data: r.data as string, updatedAt: r.updated_at as number }));
+  return json({ name: ws.name, canWrite, budgets });
+}
+
+// PUT /api/w/:token
+async function handleUpdateWorkspaceByToken(token: string, request: Request): Promise<Response> {
+  const ws = db.prepare("SELECT id, rw_token FROM workspaces WHERE rw_token = ?").get(token) as DbWorkspace | undefined;
+  if (!ws) return json({ error: "Not found or read-only" }, 403);
+
+  let body: { budgetId: string; data: string; updatedAt: number };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+
+  const member = db.prepare("SELECT budget_id FROM workspace_budgets WHERE workspace_id = ? AND budget_id = ?").get(ws.id, body.budgetId) as { budget_id: string } | undefined;
+  if (!member) return json({ error: "Budget not in workspace" }, 403);
+
+  const existing = db.prepare("SELECT id, updated_at FROM budgets WHERE id = ?").get(body.budgetId) as { id: string; updated_at: number } | undefined;
+  if (!existing) return json({ error: "Budget not found" }, 404);
+
+  if (body.updatedAt > existing.updated_at) {
+    db.prepare("UPDATE budgets SET data = ?, updated_at = ? WHERE id = ?").run(body.data, body.updatedAt, body.budgetId);
+    notifyWatchers(body.budgetId, body.data, body.updatedAt);
+  }
+
+  return json({ ok: true });
+}
+
 // ─── API router ───────────────────────────────────────────────────────────────
 
 async function handleApiRequest(request: Request, url: URL): Promise<Response> {
@@ -354,6 +556,13 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
   const watchMatch = path.match(/^\/api\/watch\/([A-Za-z0-9]{32})$/);
   if (watchMatch && method === "GET") return handleWatch(watchMatch[1]);
 
+  // Workspace public endpoints (no auth required)
+  const wsTokenMatch = path.match(/^\/api\/w\/([A-Za-z0-9]{32})$/);
+  if (wsTokenMatch) {
+    if (method === "GET") return handleGetWorkspaceByToken(wsTokenMatch[1]);
+    if (method === "PUT") return handleUpdateWorkspaceByToken(wsTokenMatch[1], request);
+  }
+
   const deviceId = request.headers.get("X-Device-Id");
   if (!deviceId) return json({ error: "Missing X-Device-Id header" }, 401);
 
@@ -363,6 +572,24 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
       return handleGetShareLinks(deviceId, request);
     if (path === "/api/share/links" && method === "DELETE")
       return handleRevokeShareLinks(deviceId, request);
+
+    if (path === "/api/workspaces" && method === "POST") return handleCreateWorkspace(deviceId, request);
+    if (path === "/api/workspaces" && method === "GET") return handleListWorkspaces(deviceId);
+
+    const wsIdMatch = path.match(/^\/api\/workspaces\/([a-z0-9-]{36})$/);
+    if (wsIdMatch) {
+      if (method === "PATCH") return handleRenameWorkspace(deviceId, wsIdMatch[1], request);
+      if (method === "DELETE") return handleDeleteWorkspace(deviceId, wsIdMatch[1]);
+    }
+
+    const wsIdBudgetsMatch = path.match(/^\/api\/workspaces\/([a-z0-9-]{36})\/budgets$/);
+    if (wsIdBudgetsMatch && method === "POST") return handleAddBudgetToWorkspace(deviceId, wsIdBudgetsMatch[1], request);
+
+    const wsIdBudgetIdMatch = path.match(/^\/api\/workspaces\/([a-z0-9-]{36})\/budgets\/(.+)$/);
+    if (wsIdBudgetIdMatch && method === "DELETE") return handleRemoveBudgetFromWorkspace(deviceId, wsIdBudgetIdMatch[1], wsIdBudgetIdMatch[2]);
+
+    if (path === "/api/workspace/links" && method === "POST") return handleGetWorkspaceLinks(deviceId, request);
+    if (path === "/api/workspace/links" && method === "DELETE") return handleRevokeWorkspaceLinks(deviceId, request);
 
     return json({ error: "Not found" }, 404);
   } catch (err) {
