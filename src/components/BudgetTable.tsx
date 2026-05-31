@@ -93,12 +93,28 @@ export function BudgetTable({
     const amt = parseFloat(newTx.amount);
     if (!amt || !newTx.fromId || !newTx.date) return;
 
-    if (!force && incomeRemaining) {
-      const rem = incomeRemaining[newTx.fromId];
-      if (rem !== undefined && amt > rem) {
-        const label = incomeEntries.find((e) => e.id === newTx.fromId)?.label ?? "this source";
-        const excess = fmt(amt - rem);
-        setOverspendWarn({ entryId, message: `This exceeds the remaining balance of "${label}" by ${excess}.` });
+    if (!force) {
+      const warnings: string[] = [];
+
+      if (incomeRemaining) {
+        const rem = incomeRemaining[newTx.fromId];
+        if (rem !== undefined && amt > rem) {
+          const label = incomeEntries.find((e) => e.id === newTx.fromId)?.label ?? "this source";
+          warnings.push(`Exceeds the remaining balance of "${label}" by ${fmt(amt - rem)}.`);
+        }
+      }
+
+      const row = entries.find((e) => e.id === entryId);
+      if (row) {
+        const spent = (row.transactions ?? []).reduce((s, t) => s + t.amount, 0);
+        const newRemaining = row.amount - spent - amt;
+        if (newRemaining < 0) {
+          warnings.push(`Turns the budget for "${row.label || "this row"}" negative by ${fmt(Math.abs(newRemaining))}.`);
+        }
+      }
+
+      if (warnings.length > 0) {
+        setOverspendWarn({ entryId, message: warnings.join(" ") });
         return;
       }
     }
