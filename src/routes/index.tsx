@@ -162,6 +162,7 @@ function deserializeFromSync(id: string, data: string, updatedAt: number): Budge
     order: parsed.order ?? Date.now(),
     undoStack: [],
     redoStack: [],
+    mode: parsed.mode === "recording" ? "recording" : "editing",
   };
 }
 
@@ -343,6 +344,7 @@ function BudgetApp() {
           syncSource: { token: src.token, canWrite: remote.canWrite },
           undoStack: [],
           redoStack: [],
+          mode: parsed.mode === "recording" ? "recording" : "editing",
         };
         await putBudget(updated);
         setBudgets((arr) => arr.map((x) => (x.id === updated.id ? updated : x)));
@@ -426,6 +428,7 @@ function BudgetApp() {
         updatedAt: remoteUpdatedAt,
         undoStack: [],
         redoStack: [],
+        mode: parsed.mode === "recording" ? "recording" : "editing",
       };
     }
 
@@ -945,7 +948,8 @@ function BudgetApp() {
     setBudgets((arr) => arr.filter((x) => x.id !== b.id));
   };
 
-  const [budgetMode, setBudgetMode] = useState<"editing" | "recording">("editing");
+  // budgetMode is stored on the active budget so it persists and syncs to all viewers
+  const budgetMode = active?.mode ?? "editing";
 
   const totalIncome = useMemo(
     () => (active?.income ?? []).reduce((s, e) => s + (e.amount || 0), 0),
@@ -1551,7 +1555,13 @@ function BudgetApp() {
               className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60 read-only:cursor-default"
             />
             <button
-              onClick={() => setBudgetMode((m) => m === "editing" ? "recording" : "editing")}
+              onClick={() => {
+                if (!active) return;
+                const newMode = budgetMode === "editing" ? "recording" : "editing";
+                const updated = { ...active, mode: newMode as "editing" | "recording", updatedAt: Date.now() };
+                setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+                persistRow(updated);
+              }}
               className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
                 budgetMode === "editing"
                   ? "bg-muted text-foreground border-border hover:bg-muted/70"

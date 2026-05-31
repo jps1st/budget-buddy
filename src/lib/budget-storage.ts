@@ -36,6 +36,7 @@ export type BudgetRow = {
   syncSource?: SyncSource; // set for budgets opened via a share link
   undoStack?: BudgetSnapshot[];
   redoStack?: BudgetSnapshot[];
+  mode?: "editing" | "recording";
 };
 
 export interface Meta {
