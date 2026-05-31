@@ -77,6 +77,7 @@ import {
   type ShareLinks,
   type WorkspaceLinks,
 } from "@/lib/sync-api";
+import { fmt } from "@/lib/utils";
 
 function uuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -1616,7 +1617,7 @@ function BudgetApp() {
                   <span
                     className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}
                   >
-                    {leftover.toFixed(2)}
+                    {fmt(leftover)}
                   </span>
                 </div>
               </div>
@@ -1636,7 +1637,7 @@ function BudgetApp() {
                           cx="50%"
                           cy="50%"
                           outerRadius={100}
-                          label={({ value }: { value: number }) => value.toFixed(2)}
+                          label={({ value }: { value: number }) => fmt(value)}
                           labelLine={false}
                         >
                           {chartData.map((entry, i) => (
@@ -1650,7 +1651,7 @@ function BudgetApp() {
                             borderRadius: "0.5rem",
                             fontSize: "0.875rem",
                           }}
-                          formatter={(v: number) => v.toFixed(2)}
+                          formatter={(v: number) => fmt(v)}
                         />
                         <Legend iconType="circle" wrapperStyle={{ fontSize: "0.75rem" }} />
                       </PieChart>
@@ -1964,7 +1965,7 @@ function Stat({
         className="text-xl font-semibold tabular-nums mt-1"
         style={{ color: `var(${colorVar})` }}
       >
-        {value.toFixed(2)}
+        {fmt(value)}
       </div>
     </div>
   );

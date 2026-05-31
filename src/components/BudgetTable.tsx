@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Trash2, Plus, GripVertical, X } from "lucide-react";
+import { fmt } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -96,7 +97,7 @@ export function BudgetTable({
       const rem = incomeRemaining[newTx.fromId];
       if (rem !== undefined && amt > rem) {
         const label = incomeEntries.find((e) => e.id === newTx.fromId)?.label ?? "this source";
-        const excess = (amt - rem).toFixed(2);
+        const excess = fmt(amt - rem);
         setOverspendWarn({ entryId, message: `This exceeds the remaining balance of "${label}" by ${excess}.` });
         return;
       }
@@ -178,9 +179,9 @@ export function BudgetTable({
                     <span className={`text-sm text-right tabular-nums px-2 py-1 ${
                       variant === "expense" ? (remaining < 0 ? "text-destructive font-semibold" : "text-foreground") : ""
                     }`}>
-                      {displayRem.toFixed(2)}
+                      {fmt(displayRem)}
                       {variant === "expense" && (
-                        <span className="ml-1 text-xs text-muted-foreground/60">/ {entry.amount.toFixed(2)}</span>
+                        <span className="ml-1 text-xs text-muted-foreground/60">/ {fmt(entry.amount)}</span>
                       )}
                     </span>
                     {!readOnly && variant === "expense" ? (
@@ -241,7 +242,7 @@ export function BudgetTable({
                     onClick={() => setViewTx({ tx, fromLabel, rowLabel: entry.label })}
                     className="flex items-start gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors">
                     <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
-                      <span className="tabular-nums text-foreground font-medium">{tx.amount.toFixed(2)}</span>
+                      <span className="tabular-nums text-foreground font-medium">{fmt(tx.amount)}</span>
                       <span>from</span>
                       <span className="font-medium text-foreground">{fromLabel}</span>
                       <span className="text-muted-foreground/60">·</span>
@@ -333,7 +334,7 @@ export function BudgetTable({
         )}
         <div className="flex items-center justify-between px-4 py-2.5 bg-muted/50 font-semibold text-sm">
           <span className="uppercase tracking-wide">{totalLabel}</span>
-          <span className="tabular-nums">{total.toFixed(2)}</span>
+          <span className="tabular-nums">{fmt(total)}</span>
         </div>
       </div>
 
@@ -348,7 +349,7 @@ export function BudgetTable({
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-md bg-muted/50 px-4 py-3">
                   <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Amount</div>
-                  <div className="text-2xl font-semibold tabular-nums">{viewTx.tx.amount.toFixed(2)}</div>
+                  <div className="text-2xl font-semibold tabular-nums">{fmt(viewTx.tx.amount)}</div>
                 </div>
                 <div className="rounded-md bg-muted/50 px-4 py-3">
                   <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Date</div>
