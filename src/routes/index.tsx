@@ -1607,7 +1607,7 @@ function BudgetApp() {
               />
             </div>
 
-            <div className="space-y-6">
+            {budgetMode === "recording" && <div className="space-y-6">
               <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
                 <div className="bg-leftover text-leftover-foreground px-4 py-2.5 text-sm font-semibold tracking-wide uppercase">
                   Money Left Over
@@ -1666,12 +1666,12 @@ function BudgetApp() {
 
               <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
                 <div className="grid grid-cols-3 gap-4 text-center">
-                  <Stat label="Income" value={totalIncome} colorVar="--income" />
-                  <Stat label="Expenses" value={totalExpenses} colorVar="--expense" />
+                  <Stat label="Income" value={displayTotalIncome} colorVar="--income" />
+                  <Stat label="Expenses" value={displayTotalExpenses} colorVar="--expense" />
                   <Stat label="Left over" value={leftover} colorVar="--leftover" />
                 </div>
               </div>
-            </div>
+            </div>}
           </div>
 
           <footer className="mt-10 text-center text-xs text-muted-foreground">
