@@ -1299,6 +1299,17 @@ function BudgetApp() {
                           >
                             <Share2 className="size-3.5 mr-2" /> Share workspace
                           </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const b = createBudget({ title: "Untitled budget", order: Date.now() });
+                              addBudget(b);
+                              void assignBudgetToWorkspace(b.id, ws.id);
+                              setExpandedWs((s) => new Set([...s, ws.id]));
+                            }}
+                          >
+                            <Plus className="size-3.5 mr-2" /> New budget here
+                          </DropdownMenuItem>
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             onClick={(e) => {
