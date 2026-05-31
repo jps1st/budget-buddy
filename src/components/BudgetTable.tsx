@@ -1,5 +1,11 @@
 import { useState } from "react";
 import { Trash2, Plus, GripVertical, X } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export type Transaction = {
   id: string;
@@ -48,6 +54,7 @@ export function BudgetTable({
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [newTx, setNewTx] = useState<{ amount: string; fromId: string; date: string; description: string }>(emptyTx);
+  const [viewTx, setViewTx] = useState<{ tx: Transaction; fromLabel: string; rowLabel: string } | null>(null);
 
   const updateEntry = (id: string, patch: Partial<Entry>) =>
     onChange(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -211,21 +218,24 @@ export function BudgetTable({
                 const fromLabel = incomeEntries.find((e) => e.id === tx.fromIncomeId)?.label ?? "(deleted)";
                 return (
                   <div key={tx.id}
-                    className="flex items-center gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground">
-                    <span className="tabular-nums text-foreground font-medium">{tx.amount.toFixed(2)}</span>
-                    <span>from</span>
-                    <span className="font-medium text-foreground truncate">{fromLabel}</span>
-                    <span className="text-muted-foreground/60">·</span>
-                    <span>{tx.date}</span>
-                    {tx.description && (
-                      <>
-                        <span className="text-muted-foreground/60">·</span>
-                        <span className="italic truncate">{tx.description}</span>
-                      </>
-                    )}
+                    onClick={() => setViewTx({ tx, fromLabel, rowLabel: entry.label })}
+                    className="flex items-start gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors">
+                    <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                      <span className="tabular-nums text-foreground font-medium">{tx.amount.toFixed(2)}</span>
+                      <span>from</span>
+                      <span className="font-medium text-foreground">{fromLabel}</span>
+                      <span className="text-muted-foreground/60">·</span>
+                      <span>{tx.date}</span>
+                      {tx.description && (
+                        <>
+                          <span className="text-muted-foreground/60">·</span>
+                          <span className="italic text-foreground/70">{tx.description}</span>
+                        </>
+                      )}
+                    </div>
                     {!readOnly && (
-                      <button onClick={() => deleteTx(entry.id, tx.id)}
-                        className="ml-auto text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                      <button onClick={(e) => { e.stopPropagation(); deleteTx(entry.id, tx.id); }}
+                        className="mt-0.5 text-muted-foreground hover:text-destructive transition-colors shrink-0"
                         aria-label="Delete transaction">
                         <X className="size-3" />
                       </button>
@@ -260,7 +270,7 @@ export function BudgetTable({
                     className="text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
                   />
                   <input
-                    type="text" placeholder="Note (optional)"
+                    type="text" placeholder="Description (optional)"
                     value={newTx.description}
                     onChange={(e) => setNewTx((t) => ({ ...t, description: e.target.value }))}
                     className="flex-1 min-w-[8rem] text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
@@ -291,6 +301,43 @@ export function BudgetTable({
           <span className="tabular-nums">{total.toFixed(2)}</span>
         </div>
       </div>
+
+      {/* ── Transaction detail modal ───────────────────────────────────── */}
+      <Dialog open={!!viewTx} onOpenChange={(o) => { if (!o) setViewTx(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transaction</DialogTitle>
+          </DialogHeader>
+          {viewTx && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-md bg-muted/50 px-4 py-3">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Amount</div>
+                  <div className="text-2xl font-semibold tabular-nums">{viewTx.tx.amount.toFixed(2)}</div>
+                </div>
+                <div className="rounded-md bg-muted/50 px-4 py-3">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Date</div>
+                  <div className="text-sm font-medium">{viewTx.tx.date}</div>
+                </div>
+              </div>
+              <div className="rounded-md bg-muted/50 px-4 py-3">
+                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Expense row</div>
+                <div className="text-sm font-medium">{viewTx.rowLabel || "—"}</div>
+              </div>
+              <div className="rounded-md bg-muted/50 px-4 py-3">
+                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Drawn from</div>
+                <div className="text-sm font-medium">{viewTx.fromLabel}</div>
+              </div>
+              {viewTx.tx.description && (
+                <div className="rounded-md bg-muted/50 px-4 py-3">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Description</div>
+                  <div className="text-sm whitespace-pre-wrap">{viewTx.tx.description}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
