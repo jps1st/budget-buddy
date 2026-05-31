@@ -70,6 +70,7 @@ import {
   removeBudgetFromWorkspace,
   getWorkspaceLinks,
   revokeWorkspaceLinks,
+  fetchWorkspaceByToken,
   updateWorkspaceByToken,
   type ShareLinks,
   type WorkspaceLinks,
@@ -505,6 +506,125 @@ function BudgetApp() {
     return () => { for (const es of sources) es.close(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedTokensKey]);
+
+  // ── Workspace SSE: subscribe to structure + budget-data events ─────────────
+  const wsTokensKey = useMemo(
+    () =>
+      workspaces
+        .filter((w) => !!w.syncSource)
+        .map((w) => `${w.id}:${w.syncSource!.token}`)
+        .sort()
+        .join(","),
+    [workspaces],
+  );
+
+  useEffect(() => {
+    const sharedWs = workspaces.filter((w) => !!w.syncSource);
+    if (sharedWs.length === 0) return;
+
+    const sources: EventSource[] = [];
+
+    for (const ws of sharedWs) {
+      const { token, canWrite } = ws.syncSource!;
+      const wsId = ws.id;
+
+      const es = new EventSource(`/api/wwatch/${token}`);
+
+      es.onmessage = (event) => {
+        type WsPayload =
+          | { type: "structure"; serverBudgetIds: string[] }
+          | { type: "budget"; budgetId: string; data: string; updatedAt: number };
+        const payload = JSON.parse(event.data as string) as WsPayload;
+
+        if (payload.type === "structure") {
+          // Re-fetch the full workspace to get data for any newly-added budgets
+          void fetchWorkspaceByToken(token).then((result) => {
+            if (!result) return;
+
+            setBudgets((arr) => {
+              const currentServerIds = new Set(
+                arr
+                  .filter((b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId)
+                  .map((b) => b.syncSource!.workspaceBudgetId!),
+              );
+
+              const newRemote = result.budgets.filter((rb) => !currentServerIds.has(rb.id));
+              const removedServerIds = new Set(
+                [...currentServerIds].filter((id) => !payload.serverBudgetIds.includes(id)),
+              );
+
+              const added: BudgetRow[] = newRemote.map((rb) => {
+                let parsed: Partial<BudgetRow> = {};
+                try { parsed = JSON.parse(rb.data) as Partial<BudgetRow>; } catch { /* keep */ }
+                return {
+                  id: uuid(),
+                  title: typeof parsed.title === "string" ? parsed.title : "Shared Budget",
+                  subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : "",
+                  income: sanitizeEntries(parsed.income),
+                  expenses: sanitizeEntries(parsed.expenses),
+                  archived: false,
+                  updatedAt: rb.updatedAt,
+                  order: Date.now(),
+                  syncSource: { token, canWrite, workspaceBudgetId: rb.id },
+                  undoStack: [],
+                  redoStack: [],
+                };
+              });
+              for (const b of added) void putBudget(b);
+
+              const removedLocalIds = arr
+                .filter((b) => b.syncSource?.token === token && removedServerIds.has(b.syncSource.workspaceBudgetId ?? ""))
+                .map((b) => b.id);
+              for (const id of removedLocalIds) void deleteBudget(id);
+
+              const next = [...arr.filter((b) => !removedLocalIds.includes(b.id)), ...added];
+
+              // Keep workspace budgetIds in sync
+              setWorkspaces((wsList) =>
+                wsList.map((w) => {
+                  if (w.id !== wsId) return w;
+                  const keep = (w.budgetIds ?? []).filter((bid) => !removedLocalIds.includes(bid));
+                  const updated = { ...w, budgetIds: [...keep, ...added.map((b) => b.id)] };
+                  void putWorkspace(updated);
+                  return updated;
+                }),
+              );
+
+              return next;
+            });
+          });
+        } else if (payload.type === "budget") {
+          setBudgets((arr) => {
+            const cur = arr.find(
+              (b) =>
+                b.syncSource?.token === token &&
+                b.syncSource.workspaceBudgetId === payload.budgetId,
+            );
+            if (!cur || payload.updatedAt <= cur.updatedAt) return arr;
+            let parsed: Partial<BudgetRow> = {};
+            try { parsed = JSON.parse(payload.data) as Partial<BudgetRow>; } catch { /* keep */ }
+            const updated: BudgetRow = {
+              ...cur,
+              title: typeof parsed.title === "string" ? parsed.title : cur.title,
+              subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
+              income: Array.isArray(parsed.income) ? parsed.income : cur.income,
+              expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
+              updatedAt: payload.updatedAt,
+              undoStack: [],
+              redoStack: [],
+            };
+            void putBudget(updated);
+            return arr.map((b) => (b.id === cur.id ? updated : b));
+          });
+        }
+      };
+
+      sources.push(es);
+    }
+
+    return () => { for (const es of sources) es.close(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wsTokensKey]);
 
   // Keep the ref pointing at the latest flushSync (which only uses other refs internally)
   // so the flush-on-hide effect below can be registered once without stale closure risk.

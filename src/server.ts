@@ -92,6 +92,48 @@ function unregisterWatcher(budgetId: string, ctrl: SseController) {
   if (set.size === 0) sseClients.delete(budgetId);
 }
 
+// workspaceId → connected workspace-level watchers
+const wsSseClients = new Map<string, Set<SseController>>();
+
+function notifyWsClients(workspaceId: string, payload: object) {
+  const clients = wsSseClients.get(workspaceId);
+  if (!clients?.size) return;
+  const chunk = enc.encode(`data: ${JSON.stringify(payload)}\n\n`);
+  for (const ctrl of clients) {
+    try { ctrl.enqueue(chunk); } catch { clients.delete(ctrl); }
+  }
+}
+
+function registerWsWatcher(workspaceId: string, ctrl: SseController) {
+  if (!wsSseClients.has(workspaceId)) wsSseClients.set(workspaceId, new Set());
+  wsSseClients.get(workspaceId)!.add(ctrl);
+}
+
+function unregisterWsWatcher(workspaceId: string, ctrl: SseController) {
+  const set = wsSseClients.get(workspaceId);
+  if (!set) return;
+  set.delete(ctrl);
+  if (set.size === 0) wsSseClients.delete(workspaceId);
+}
+
+// Notify workspace SSE clients when a budget's data changes
+function notifyBudgetInWorkspaces(budgetId: string, data: string, updatedAt: number) {
+  const rows = db
+    .prepare("SELECT workspace_id FROM workspace_budgets WHERE budget_id = ?")
+    .all(budgetId) as { workspace_id: string }[];
+  for (const { workspace_id } of rows) {
+    notifyWsClients(workspace_id, { type: "budget", budgetId, data, updatedAt });
+  }
+}
+
+// Notify workspace SSE clients when the workspace membership changes
+function notifyWsStructureChange(workspaceId: string) {
+  const rows = db
+    .prepare("SELECT budget_id FROM workspace_budgets WHERE workspace_id = ? ORDER BY position ASC")
+    .all(workspaceId) as { budget_id: string }[];
+  notifyWsClients(workspaceId, { type: "structure", serverBudgetIds: rows.map((r) => r.budget_id) });
+}
+
 // ─── SSR entry ────────────────────────────────────────────────────────────────
 
 type ServerEntry = {
@@ -227,6 +269,7 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
     } else if (existing.owner_device_id === deviceId && b.updatedAt >= existing.updated_at) {
       updateBudget.run(b.data, b.updatedAt, b.id);
       notifyWatchers(b.id, b.data, b.updatedAt);
+      notifyBudgetInWorkspaces(b.id, b.data, b.updatedAt);
     }
   }
 
@@ -332,6 +375,7 @@ async function handlePutByToken(token: string, request: Request): Promise<Respon
       budget.id,
     );
     notifyWatchers(budget.id, body.data, body.updatedAt);
+    notifyBudgetInWorkspaces(budget.id, body.data, body.updatedAt);
   }
 
   return json({ ok: true });
@@ -446,6 +490,7 @@ async function handleAddBudgetToWorkspace(deviceId: string, workspaceId: string,
   try {
     db.prepare("INSERT INTO workspace_budgets (workspace_id, budget_id, position) VALUES (?, ?, ?)").run(workspaceId, body.budgetId, countRow.cnt);
   } catch { /* already exists */ }
+  notifyWsStructureChange(workspaceId);
   return json({ ok: true });
 }
 
@@ -455,6 +500,7 @@ function handleRemoveBudgetFromWorkspace(deviceId: string, workspaceId: string, 
   if (!ws) return json({ error: "Not found" }, 404);
   if (ws.owner_device_id !== deviceId) return json({ error: "Forbidden" }, 403);
   db.prepare("DELETE FROM workspace_budgets WHERE workspace_id = ? AND budget_id = ?").run(workspaceId, budgetId);
+  notifyWsStructureChange(workspaceId);
   return json({ ok: true });
 }
 
@@ -535,6 +581,7 @@ async function handleUpdateWorkspaceByToken(token: string, request: Request): Pr
   if (body.updatedAt > existing.updated_at) {
     db.prepare("UPDATE budgets SET data = ?, updated_at = ? WHERE id = ?").run(body.data, body.updatedAt, body.budgetId);
     notifyWatchers(body.budgetId, body.data, body.updatedAt);
+    notifyBudgetInWorkspaces(body.budgetId, body.data, body.updatedAt);
   }
 
   return json({ ok: true });
@@ -545,6 +592,41 @@ async function handleUpdateWorkspaceByToken(token: string, request: Request): Pr
 async function handleApiRequest(request: Request, url: URL): Promise<Response> {
   const path = url.pathname;
   const method = request.method;
+
+  // GET /api/wwatch/:token — SSE for workspace structure + budget data changes
+  const wwatchMatch = path.match(/^\/api\/wwatch\/([A-Za-z0-9]{32})$/);
+  if (wwatchMatch && method === "GET") {
+    const token = wwatchMatch[1];
+    const ws = db
+      .prepare("SELECT id FROM workspaces WHERE ro_token = ? OR rw_token = ?")
+      .get(token, token) as { id: string } | undefined;
+    if (!ws) return json({ error: "Not found" }, 404);
+    const workspaceId = ws.id;
+    let ctrl: SseController;
+    let heartbeat: ReturnType<typeof setInterval>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        ctrl = controller;
+        registerWsWatcher(workspaceId, ctrl);
+        controller.enqueue(enc.encode(": connected\n\n"));
+        heartbeat = setInterval(() => {
+          try { controller.enqueue(enc.encode(": ping\n\n")); } catch { clearInterval(heartbeat); }
+        }, 25_000);
+      },
+      cancel() {
+        clearInterval(heartbeat);
+        unregisterWsWatcher(workspaceId, ctrl);
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
+    });
+  }
 
   // Token endpoints don't require device ID
   const tokenMatch = path.match(/^\/api\/t\/([A-Za-z0-9]{32})$/);
