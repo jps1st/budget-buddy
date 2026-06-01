@@ -11,6 +11,7 @@ ssh node10 bash << 'REMOTE'
   cd ~/budget-buddy
 
   echo "==> Pulling latest changes..."
+  git stash --include-untracked
   git pull
 
   node --version
