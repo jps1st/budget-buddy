@@ -14,6 +14,7 @@ ssh node10 bash << 'REMOTE'
   git pull
 
   node --version
+  nvm use 22
 
   echo "==> Installing dependencies..."
   npm ci --prefer-offline
