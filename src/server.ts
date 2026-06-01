@@ -1,7 +1,8 @@
 import "./lib/error-capture";
 
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { join, extname } from "node:path";
 import { serve } from "srvx/node";
 import { serveStatic } from "srvx/static";
 import { consumeLastCapturedError } from "./lib/error-capture";
@@ -10,6 +11,40 @@ import { renderErrorPage } from "./lib/error-page";
 // ─── SQLite ───────────────────────────────────────────────────────────────────
 
 mkdirSync("./data", { recursive: true });
+mkdirSync("./data/receipts", { recursive: true });
+
+const RECEIPTS_DIR = "./data/receipts";
+const RECEIPT_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const RECEIPT_MIME: Record<string, string> = {
+  ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+  ".gif": "image/gif", ".webp": "image/webp", ".heic": "image/heic",
+  ".pdf": "application/pdf",
+};
+
+async function handleUploadReceipt(request: Request): Promise<Response> {
+  let formData: FormData;
+  try { formData = await request.formData(); } catch { return json({ error: "Invalid form data" }, 400); }
+  const file = formData.get("file");
+  if (!(file instanceof File)) return json({ error: "No file provided" }, 400);
+  if (file.size > RECEIPT_MAX_BYTES) return json({ error: "File too large (max 10 MB)" }, 413);
+  const ext = extname(file.name).toLowerCase();
+  if (!RECEIPT_MIME[ext]) return json({ error: "Unsupported file type" }, 415);
+  const filename = `${generateToken()}${ext}`;
+  const buffer = Buffer.from(await file.arrayBuffer());
+  writeFileSync(join(RECEIPTS_DIR, filename), buffer);
+  return json({ url: `/api/receipts/${filename}` });
+}
+
+function handleServeReceipt(filename: string): Response {
+  if (/[/\\.]\./.test(filename)) return json({ error: "Invalid filename" }, 400);
+  const filepath = join(RECEIPTS_DIR, filename);
+  if (!existsSync(filepath)) return json({ error: "Not found" }, 404);
+  const ext = extname(filename).toLowerCase();
+  const contentType = RECEIPT_MIME[ext] ?? "application/octet-stream";
+  return new Response(readFileSync(filepath), {
+    headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=31536000" },
+  });
+}
 
 const db = new DatabaseSync("./data/budget-sync.db");
 
@@ -627,6 +662,11 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
       },
     });
   }
+
+  // Receipt endpoints (no auth required)
+  if (path === "/api/receipts" && method === "POST") return handleUploadReceipt(request);
+  const receiptMatch = path.match(/^\/api\/receipts\/([A-Za-z0-9_.-]{10,80})$/);
+  if (receiptMatch && method === "GET") return handleServeReceipt(receiptMatch[1]);
 
   // Token endpoints don't require device ID
   const tokenMatch = path.match(/^\/api\/t\/([A-Za-z0-9]{32})$/);

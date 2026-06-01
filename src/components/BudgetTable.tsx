@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown } from "lucide-react";
+import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown, Paperclip, Camera } from "lucide-react";
 import { fmt } from "@/lib/utils";
 import {
   Dialog,
@@ -14,6 +14,7 @@ export type Transaction = {
   fromIncomeId: string;
   date: string;
   description?: string;
+  receiptUrl?: string;
 };
 
 export type Entry = { id: string; label: string; amount: number; transactions?: Transaction[] };
@@ -65,6 +66,8 @@ export function BudgetTable({
   const [viewTx, setViewTx] = useState<{ tx: Transaction; fromLabel: string; rowLabel: string } | null>(null);
   const [overspendWarn, setOverspendWarn] = useState<{ entryId: string; message: string } | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   const toggleRow = (id: string) =>
     setExpandedRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -93,7 +96,7 @@ export function BudgetTable({
     onChange(result, true);
   };
 
-  const commitTx = (entryId: string, force = false) => {
+  const commitTx = async (entryId: string, force = false) => {
     const amt = parseFloat(newTx.amount);
     if (!amt || !newTx.fromId || !newTx.date) return;
 
@@ -124,17 +127,35 @@ export function BudgetTable({
     }
 
     setOverspendWarn(null);
+
+    let receiptUrl: string | undefined;
+    if (receiptFile) {
+      setUploading(true);
+      try {
+        const fd = new FormData();
+        fd.append("file", receiptFile);
+        const res = await fetch("/api/receipts", { method: "POST", body: fd });
+        if (res.ok) {
+          const data = await res.json() as { url: string };
+          receiptUrl = data.url;
+        }
+      } catch { /* proceed without receipt if upload fails */ }
+      setUploading(false);
+    }
+
     const tx: Transaction = {
       id: crypto.randomUUID(),
       amount: amt,
       fromIncomeId: newTx.fromId,
       date: newTx.date,
       description: newTx.description.trim() || undefined,
+      receiptUrl,
     };
     updateEntry(entryId, {
       transactions: [...(entries.find((e) => e.id === entryId)?.transactions ?? []), tx],
     });
     setNewTx(emptyTx());
+    setReceiptFile(null);
     setAddingTo(null);
   };
 
@@ -297,6 +318,9 @@ export function BudgetTable({
                           <span className="italic text-foreground/70">{tx.description}</span>
                         </>
                       )}
+                      {tx.receiptUrl && (
+                        <Paperclip className="size-3 text-primary shrink-0" aria-label="Has receipt" />
+                      )}
                     </div>
                     {!readOnly && (
                       <button onClick={(e) => { e.stopPropagation(); deleteTx(entry.id, tx.id); }}
@@ -340,12 +364,20 @@ export function BudgetTable({
                     onChange={(e) => setNewTx((t) => ({ ...t, description: e.target.value }))}
                     className="flex-1 min-w-[8rem] text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
                   />
-                  <button onClick={() => commitTx(entry.id)}
-                    disabled={!newTx.amount || !newTx.fromId || !newTx.date}
+                  <label className="flex items-center gap-1 text-xs px-2 py-1.5 rounded border border-border hover:bg-muted cursor-pointer transition-colors shrink-0"
+                    title={receiptFile ? receiptFile.name : "Attach receipt"}>
+                    {receiptFile
+                      ? <><Paperclip className="size-3.5 text-primary" /><span className="max-w-[6rem] truncate text-primary">{receiptFile.name}</span></>
+                      : <><Camera className="size-3.5" /> Receipt</>}
+                    <input type="file" accept="image/*,.pdf" className="hidden"
+                      onChange={(e) => setReceiptFile(e.target.files?.[0] ?? null)} />
+                  </label>
+                  <button onClick={() => void commitTx(entry.id)}
+                    disabled={!newTx.amount || !newTx.fromId || !newTx.date || uploading}
                     className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                    Add
+                    {uploading ? "Uploading…" : "Add"}
                   </button>
-                  <button onClick={() => { setAddingTo(null); setOverspendWarn(null); }}
+                  <button onClick={() => { setAddingTo(null); setOverspendWarn(null); setReceiptFile(null); }}
                     className="text-xs px-2 py-1.5 rounded border border-border hover:bg-muted transition-colors">
                     Cancel
                   </button>
@@ -353,7 +385,7 @@ export function BudgetTable({
                     <div className="w-full rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-xs text-destructive">
                       <p className="mb-2">{overspendWarn.message} Add anyway?</p>
                       <div className="flex gap-2">
-                        <button onClick={() => commitTx(entry.id, true)}
+                        <button onClick={() => void commitTx(entry.id, true)}
                           className="px-2.5 py-1 rounded bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors">
                           Yes, add
                         </button>
@@ -412,6 +444,22 @@ export function BudgetTable({
                 <div className="rounded-md bg-muted/50 px-4 py-3">
                   <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Description</div>
                   <div className="text-sm whitespace-pre-wrap">{viewTx.tx.description}</div>
+                </div>
+              )}
+              {viewTx.tx.receiptUrl && (
+                <div className="rounded-md bg-muted/50 px-4 py-3">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide mb-2">Receipt</div>
+                  {/\.(jpg|jpeg|png|gif|webp|heic)$/i.test(viewTx.tx.receiptUrl) ? (
+                    <a href={viewTx.tx.receiptUrl} target="_blank" rel="noopener noreferrer">
+                      <img src={viewTx.tx.receiptUrl} alt="Receipt"
+                        className="max-w-full rounded-md border border-border" />
+                    </a>
+                  ) : (
+                    <a href={viewTx.tx.receiptUrl} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm text-primary underline underline-offset-2">
+                      <Paperclip className="size-4" /> View receipt
+                    </a>
+                  )}
                 </div>
               )}
             </div>
