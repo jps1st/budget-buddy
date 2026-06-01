@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown, Paperclip, Camera } from "lucide-react";
+import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown, Paperclip, Camera, ImageIcon, FileText } from "lucide-react";
 import { fmt } from "@/lib/utils";
 import {
   Dialog,
@@ -319,7 +319,9 @@ export function BudgetTable({
                         </>
                       )}
                       {tx.receiptUrl && (
-                        <Paperclip className="size-3 text-primary shrink-0" aria-label="Has receipt" />
+                        /\.(jpg|jpeg|png|gif|webp|heic)$/i.test(tx.receiptUrl)
+                          ? <ImageIcon className="size-4 text-primary shrink-0" aria-label="Has image receipt" />
+                          : <FileText className="size-4 text-primary shrink-0" aria-label="Has receipt" />
                       )}
                     </div>
                     {!readOnly && (
@@ -447,18 +449,23 @@ export function BudgetTable({
                 </div>
               )}
               {viewTx.tx.receiptUrl && (
-                <div className="rounded-md bg-muted/50 px-4 py-3">
-                  <div className="text-xs text-muted-foreground uppercase tracking-wide mb-2">Receipt</div>
+                <div className="rounded-md overflow-hidden border border-border">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide px-4 py-2 bg-muted/50">Receipt</div>
                   {/\.(jpg|jpeg|png|gif|webp|heic)$/i.test(viewTx.tx.receiptUrl) ? (
-                    <a href={viewTx.tx.receiptUrl} target="_blank" rel="noopener noreferrer">
-                      <img src={viewTx.tx.receiptUrl} alt="Receipt"
-                        className="max-w-full rounded-md border border-border" />
+                    <a href={viewTx.tx.receiptUrl} target="_blank" rel="noopener noreferrer" className="block">
+                      <img
+                        src={viewTx.tx.receiptUrl}
+                        alt="Receipt"
+                        className="w-full object-contain max-h-96 bg-muted/20"
+                      />
                     </a>
                   ) : (
-                    <a href={viewTx.tx.receiptUrl} target="_blank" rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 text-sm text-primary underline underline-offset-2">
-                      <Paperclip className="size-4" /> View receipt
-                    </a>
+                    <div className="px-4 py-3">
+                      <a href={viewTx.tx.receiptUrl} target="_blank" rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-sm text-primary underline underline-offset-2">
+                        <FileText className="size-4" /> View receipt
+                      </a>
+                    </div>
                   )}
                 </div>
               )}
