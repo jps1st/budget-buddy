@@ -259,6 +259,18 @@ function BudgetApp() {
 
       // Initial remote sync in background
       void doInitialSync(did, finalRows);
+
+      // Cleanup budgets archived for 30+ days (server deletes receipts too)
+      void fetch("/api/maintenance/cleanup-expired", { method: "POST" })
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (!data) return;
+          const { deletedIds } = data as { deletedIds: string[] };
+          if (!deletedIds?.length) return;
+          void Promise.all(deletedIds.map((id) => deleteBudget(id)));
+          setBudgets((arr) => arr.filter((b) => !deletedIds.includes(b.id)));
+        })
+        .catch(() => { /* non-critical */ });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -944,6 +956,15 @@ function BudgetApp() {
   };
 
   const permanentlyDelete = async (b: BudgetRow) => {
+    // Delete associated receipt files from the server before removing the budget
+    for (const exp of b.expenses) {
+      for (const tx of exp.transactions ?? []) {
+        if (tx.receiptUrl) {
+          const filename = tx.receiptUrl.split("/").pop();
+          if (filename) void fetch(`/api/receipts/${encodeURIComponent(filename)}`, { method: "DELETE" });
+        }
+      }
+    }
     await deleteBudget(b.id);
     setBudgets((arr) => arr.filter((x) => x.id !== b.id));
   };

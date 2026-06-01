@@ -1,7 +1,7 @@
 import "./lib/error-capture";
 
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
 import { serve } from "srvx/node";
 import { serveStatic } from "srvx/static";
@@ -44,6 +44,48 @@ function handleServeReceipt(filename: string): Response {
   return new Response(readFileSync(filepath), {
     headers: { "Content-Type": contentType, "Cache-Control": "public, max-age=31536000" },
   });
+}
+
+function deleteReceiptFile(url: string) {
+  const filename = url.split("/").pop() ?? "";
+  if (!filename || /[/\\.]\./.test(filename)) return;
+  try { unlinkSync(join(RECEIPTS_DIR, filename)); } catch { /* already gone */ }
+}
+
+function handleDeleteReceipt(filename: string): Response {
+  if (/[/\\.]\./.test(filename)) return json({ error: "Invalid filename" }, 400);
+  try { unlinkSync(join(RECEIPTS_DIR, filename)); } catch { /* already gone */ }
+  return json({ ok: true });
+}
+
+function handleCleanupExpired(): Response {
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const rows = db.prepare("SELECT id, data FROM budgets").all() as { id: string; data: string }[];
+  const deletedIds: string[] = [];
+
+  for (const row of rows) {
+    let parsed: { archived?: boolean; archivedAt?: number; expenses?: unknown[] } = {};
+    try { parsed = JSON.parse(row.data) as typeof parsed; } catch { continue; }
+    if (!parsed.archived || !parsed.archivedAt || parsed.archivedAt >= cutoff) continue;
+
+    // Delete any receipt files attached to transactions in this budget
+    const expenses = Array.isArray(parsed.expenses) ? parsed.expenses : [];
+    for (const exp of expenses) {
+      if (!exp || typeof exp !== "object") continue;
+      const txs = (exp as { transactions?: unknown[] }).transactions ?? [];
+      for (const tx of txs) {
+        if (tx && typeof tx === "object") {
+          const url = (tx as { receiptUrl?: string }).receiptUrl;
+          if (url) deleteReceiptFile(url);
+        }
+      }
+    }
+
+    db.prepare("DELETE FROM budgets WHERE id = ?").run(row.id);
+    deletedIds.push(row.id);
+  }
+
+  return json({ deletedIds });
 }
 
 const db = new DatabaseSync("./data/budget-sync.db");
@@ -667,6 +709,10 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
   if (path === "/api/receipts" && method === "POST") return handleUploadReceipt(request);
   const receiptMatch = path.match(/^\/api\/receipts\/([A-Za-z0-9_.-]{10,80})$/);
   if (receiptMatch && method === "GET") return handleServeReceipt(receiptMatch[1]);
+  if (receiptMatch && method === "DELETE") return handleDeleteReceipt(receiptMatch[1]);
+
+  // Maintenance (no auth required — only affects data past its retention period)
+  if (path === "/api/maintenance/cleanup-expired" && method === "POST") return handleCleanupExpired();
 
   // Token endpoints don't require device ID
   const tokenMatch = path.match(/^\/api\/t\/([A-Za-z0-9]{32})$/);
