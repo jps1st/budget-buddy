@@ -957,8 +957,9 @@ function BudgetApp() {
 
   const permanentlyDelete = async (b: BudgetRow) => {
     // Delete associated receipt files from the server before removing the budget
-    for (const exp of b.expenses) {
-      for (const tx of exp.transactions ?? []) {
+    const allEntries = [...b.expenses, ...b.income];
+    for (const entry of allEntries) {
+      for (const tx of entry.transactions ?? []) {
         if (tx.receiptUrl) {
           const filename = tx.receiptUrl.split("/").pop();
           if (filename) void fetch(`/api/receipts/${encodeURIComponent(filename)}`, { method: "DELETE" });
@@ -981,18 +982,40 @@ function BudgetApp() {
     [active?.expenses],
   );
 
-  // Recording-mode: remaining per income entry (income amount minus all transactions drawing from it)
+  // Recording-mode: remaining per income entry, accounting for transfers in/out and expense draws
   const incomeRemainingMap = useMemo<Record<string, number>>(() => {
     if (budgetMode !== "recording") return {};
-    const drawn: Record<string, number> = {};
+
+    // Money drawn from each income entry by expense transactions
+    const drawnByExpenses: Record<string, number> = {};
     for (const exp of active?.expenses ?? []) {
       for (const tx of exp.transactions ?? []) {
-        drawn[tx.fromIncomeId] = (drawn[tx.fromIncomeId] ?? 0) + tx.amount;
+        if (tx.fromIncomeId) {
+          drawnByExpenses[tx.fromIncomeId] = (drawnByExpenses[tx.fromIncomeId] ?? 0) + tx.amount;
+        }
       }
     }
+
+    // Money transferred into each income entry (income transactions on that entry)
+    const transfersIn: Record<string, number> = {};
+    // Money transferred out of an income entry (when another income entry lists it as source)
+    const transfersOut: Record<string, number> = {};
+    for (const inc of active?.income ?? []) {
+      for (const tx of inc.transactions ?? []) {
+        transfersIn[inc.id] = (transfersIn[inc.id] ?? 0) + tx.amount;
+        if (tx.fromIncomeId) {
+          transfersOut[tx.fromIncomeId] = (transfersOut[tx.fromIncomeId] ?? 0) + tx.amount;
+        }
+      }
+    }
+
     const result: Record<string, number> = {};
     for (const inc of active?.income ?? []) {
-      result[inc.id] = inc.amount - (drawn[inc.id] ?? 0);
+      result[inc.id] =
+        inc.amount +
+        (transfersIn[inc.id] ?? 0) -
+        (transfersOut[inc.id] ?? 0) -
+        (drawnByExpenses[inc.id] ?? 0);
     }
     return result;
   }, [budgetMode, active?.income, active?.expenses]);
@@ -1622,7 +1645,8 @@ function BudgetApp() {
                 total={displayTotalIncome}
                 mode={budgetMode}
                 remainingOverrides={budgetMode === "recording" ? incomeRemainingMap : undefined}
-                readOnly={budgetMode === "recording" || (!!active.syncSource && !active.syncSource.canWrite)}
+                incomeEntries={budgetMode === "recording" ? active.income : undefined}
+                readOnly={!!active.syncSource && !active.syncSource.canWrite}
               />
               <BudgetTable
                 title="Money Out"

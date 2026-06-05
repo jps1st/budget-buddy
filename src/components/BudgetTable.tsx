@@ -11,7 +11,7 @@ import {
 export type Transaction = {
   id: string;
   amount: number;
-  fromIncomeId: string;
+  fromIncomeId?: string;
   date: string;
   description?: string;
   receiptUrl?: string;
@@ -63,7 +63,7 @@ export function BudgetTable({
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [newTx, setNewTx] = useState<{ amount: string; fromId: string; date: string; description: string }>(emptyTx);
-  const [viewTx, setViewTx] = useState<{ tx: Transaction; fromLabel: string; rowLabel: string } | null>(null);
+  const [viewTx, setViewTx] = useState<{ tx: Transaction; fromLabel: string; rowLabel: string; isIncome?: boolean } | null>(null);
   const [overspendWarn, setOverspendWarn] = useState<{ entryId: string; message: string } | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
@@ -98,9 +98,10 @@ export function BudgetTable({
 
   const commitTx = async (entryId: string, force = false) => {
     const amt = parseFloat(newTx.amount);
-    if (!amt || !newTx.fromId || !newTx.date) return;
+    if (!amt || !newTx.date) return;
+    if (variant === "expense" && !newTx.fromId) return;
 
-    if (!force) {
+    if (!force && variant === "expense") {
       const warnings: string[] = [];
 
       if (incomeRemaining) {
@@ -181,7 +182,7 @@ export function BudgetTable({
           const remaining  = entry.amount - spent;
           const displayRem = remainingOverrides?.[entry.id] ?? remaining;
           const txCount    = (entry.transactions ?? []).length;
-          const isExpanded = isRecording && variant === "expense" && expandedRows.has(entry.id);
+          const isExpanded = isRecording && variant !== "leftover" && expandedRows.has(entry.id);
 
           return (
             <div key={entry.id}>
@@ -189,7 +190,7 @@ export function BudgetTable({
               <div
                 onDragOver={(e) => { e.preventDefault(); setDragOverId(entry.id); }}
                 onDrop={(e)     => { e.preventDefault(); if (dragId) reorder(dragId, entry.id); setDragOverId(null); }}
-                onClick={() => { if (isRecording && variant === "expense" && !isPending) toggleRow(entry.id); }}
+                onClick={() => { if (isRecording && variant !== "leftover" && !isPending) toggleRow(entry.id); }}
                 className={`group px-3 py-2 transition-colors ${
                   isPending
                     ? "flex flex-col gap-2"
@@ -198,7 +199,7 @@ export function BudgetTable({
                       : "grid grid-cols-[auto_1fr_auto_auto] items-center gap-2"
                 } ${isOver ? "border-t-2 border-primary bg-primary/5" : "hover:bg-muted/40"} ${
                   isDragging ? "opacity-40" : ""
-                } ${isRecording && variant === "expense" ? "cursor-pointer" : ""}`}
+                } ${isRecording && variant !== "leftover" ? "cursor-pointer" : ""}`}
               >
                 {isPending ? (
                   <>
@@ -219,32 +220,26 @@ export function BudgetTable({
                 ) : isRecording ? (
                   /* ── Recording mode row ─────────────────────────────── */
                   <>
-                    {variant === "expense" ? (
-                      <span className="text-muted-foreground/50 shrink-0">
-                        {isExpanded
-                          ? <ChevronDown className="size-3.5" />
-                          : <ChevronRight className="size-3.5" />}
-                      </span>
-                    ) : (
-                      <span className="w-3.5 shrink-0" />
-                    )}
+                    <span className="text-muted-foreground/50 shrink-0">
+                      {isExpanded
+                        ? <ChevronDown className="size-3.5" />
+                        : <ChevronRight className="size-3.5" />}
+                    </span>
                     <span className="text-sm px-2 py-1 truncate flex items-center gap-1.5">
                       {entry.label || <span className="text-muted-foreground/60">Item</span>}
-                      {variant === "expense" && txCount > 0 && !isExpanded && (
+                      {txCount > 0 && !isExpanded && (
                         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
                           {txCount}
                         </span>
                       )}
                     </span>
                     <span className={`text-sm text-right tabular-nums px-2 py-1 ${
-                      variant === "expense" ? (remaining < 0 ? "text-destructive font-semibold" : "text-foreground") : ""
+                      displayRem < 0 ? "text-destructive font-semibold" : "text-foreground"
                     }`}>
                       {fmt(displayRem)}
-                      {variant === "expense" && (
-                        <span className="ml-1 text-xs text-muted-foreground/60">/ {fmt(entry.amount)}</span>
-                      )}
+                      <span className="ml-1 text-xs text-muted-foreground/60">/ {fmt(entry.amount)}</span>
                     </span>
-                    {!readOnly && variant === "expense" ? (
+                    {!readOnly ? (
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -299,17 +294,23 @@ export function BudgetTable({
                 )}
               </div>
 
-              {/* ── Transaction sub-rows (recording mode, expense only) ── */}
+              {/* ── Transaction sub-rows (recording mode) ── */}
               {isExpanded && (entry.transactions ?? []).map((tx) => {
-                const fromLabel = incomeEntries.find((e) => e.id === tx.fromIncomeId)?.label ?? "(deleted)";
+                const fromLabel = tx.fromIncomeId
+                  ? (incomeEntries.find((e) => e.id === tx.fromIncomeId)?.label ?? "(deleted)")
+                  : "";
                 return (
                   <div key={tx.id}
-                    onClick={(e) => { e.stopPropagation(); setViewTx({ tx, fromLabel, rowLabel: entry.label }); }}
+                    onClick={(e) => { e.stopPropagation(); setViewTx({ tx, fromLabel, rowLabel: entry.label, isIncome: variant === "income" }); }}
                     className="flex items-start gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors">
                     <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
                       <span className="tabular-nums text-foreground font-medium">{fmt(tx.amount)}</span>
-                      <span>←</span>
-                      <span className="font-medium text-foreground">{fromLabel}</span>
+                      {fromLabel && (
+                        <>
+                          <span>←</span>
+                          <span className="font-medium text-foreground">{fromLabel}</span>
+                        </>
+                      )}
                       <span className="text-muted-foreground/60">·</span>
                       <span>{formatTxDate(tx.date)}</span>
                       {tx.description && (
@@ -350,10 +351,12 @@ export function BudgetTable({
                     onChange={(e) => setNewTx((t) => ({ ...t, fromId: e.target.value }))}
                     className="flex-1 min-w-[8rem] text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
                   >
-                    <option value="">Source…</option>
-                    {incomeEntries.map((ie) => (
-                      <option key={ie.id} value={ie.id}>{ie.label || "Unnamed"}</option>
-                    ))}
+                    <option value="">{variant === "income" ? "Transfer from (optional)" : "Source…"}</option>
+                    {incomeEntries
+                      .filter((ie) => variant === "income" ? ie.id !== entry.id : true)
+                      .map((ie) => (
+                        <option key={ie.id} value={ie.id}>{ie.label || "Unnamed"}</option>
+                      ))}
                   </select>
                   <input
                     type="date" value={newTx.date}
@@ -375,7 +378,7 @@ export function BudgetTable({
                       onChange={(e) => setReceiptFile(e.target.files?.[0] ?? null)} />
                   </label>
                   <button onClick={() => void commitTx(entry.id)}
-                    disabled={!newTx.amount || !newTx.fromId || !newTx.date || uploading}
+                    disabled={!newTx.amount || (variant === "expense" && !newTx.fromId) || !newTx.date || uploading}
                     className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
                     {uploading ? "Uploading…" : "Add"}
                   </button>
@@ -435,13 +438,17 @@ export function BudgetTable({
                 </div>
               </div>
               <div className="rounded-md bg-muted/50 px-4 py-3">
-                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Expense row</div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">
+                  {viewTx.isIncome ? "Income account" : "Expense row"}
+                </div>
                 <div className="text-sm font-medium">{viewTx.rowLabel || "—"}</div>
               </div>
-              <div className="rounded-md bg-muted/50 px-4 py-3">
-                <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">← From</div>
-                <div className="text-sm font-medium">{viewTx.fromLabel}</div>
-              </div>
+              {viewTx.fromLabel && (
+                <div className="rounded-md bg-muted/50 px-4 py-3">
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">← From</div>
+                  <div className="text-sm font-medium">{viewTx.fromLabel}</div>
+                </div>
+              )}
               {viewTx.tx.description && (
                 <div className="rounded-md bg-muted/50 px-4 py-3">
                   <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Description</div>
