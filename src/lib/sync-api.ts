@@ -2,7 +2,16 @@ export type SyncBudget = {
   id: string;
   data: string;
   updatedAt: number;
+  expectedUpdatedAt?: number;
 };
+
+export type SyncConflict = { id: string; data: string; updatedAt: number };
+export type SyncResult = { budgets: SyncBudget[]; conflicts: SyncConflict[] };
+
+export type SharedPushResult =
+  | { ok: true }
+  | { conflict: true; serverData: string; serverUpdatedAt: number }
+  | null;
 
 export type ShareLinks = {
   roToken: string;
@@ -39,7 +48,7 @@ async function apiFetch(
 export async function syncOwnedBudgets(
   deviceId: string,
   budgets: SyncBudget[],
-): Promise<SyncBudget[] | null> {
+): Promise<SyncResult | null> {
   const res = await apiFetch("/api/sync", {
     deviceId,
     method: "POST",
@@ -47,8 +56,8 @@ export async function syncOwnedBudgets(
   });
   if (!res || !res.ok) return null;
   try {
-    const data = (await res.json()) as { budgets: SyncBudget[] };
-    return data.budgets;
+    const data = (await res.json()) as { budgets: SyncBudget[]; conflicts?: SyncConflict[] };
+    return { budgets: data.budgets, conflicts: data.conflicts ?? [] };
   } catch {
     return null;
   }
@@ -98,13 +107,23 @@ export async function updateByToken(
   deviceId: string,
   data: string,
   updatedAt: number,
-): Promise<boolean> {
+  expectedUpdatedAt?: number,
+): Promise<SharedPushResult> {
   const res = await apiFetch(`/api/t/${encodeURIComponent(token)}`, {
     deviceId,
     method: "PUT",
-    body: JSON.stringify({ data, updatedAt }),
+    body: JSON.stringify({ data, updatedAt, expectedUpdatedAt }),
   });
-  return !!res?.ok;
+  if (!res) return null;
+  if (res.status === 409) {
+    try {
+      const body = (await res.json()) as { data: string; updatedAt: number };
+      return { conflict: true, serverData: body.data, serverUpdatedAt: body.updatedAt };
+    } catch {
+      return null;
+    }
+  }
+  return res.ok ? { ok: true } : null;
 }
 
 export type WorkspaceLinks = { roToken: string; rwToken: string };
@@ -203,15 +222,25 @@ export async function fetchWorkspaceByToken(token: string): Promise<SharedWorksp
   }
 }
 
-export async function updateWorkspaceByToken(token: string, budgetId: string, data: string, updatedAt: number): Promise<boolean> {
+export async function updateWorkspaceByToken(
+  token: string,
+  budgetId: string,
+  data: string,
+  updatedAt: number,
+  expectedUpdatedAt?: number,
+): Promise<SharedPushResult> {
   try {
     const res = await fetch(`/api/w/${encodeURIComponent(token)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ budgetId, data, updatedAt }),
+      body: JSON.stringify({ budgetId, data, updatedAt, expectedUpdatedAt }),
     });
-    return res.ok;
+    if (res.status === 409) {
+      const body = (await res.json()) as { data: string; updatedAt: number };
+      return { conflict: true, serverData: body.data, serverUpdatedAt: body.updatedAt };
+    }
+    return res.ok ? { ok: true } : null;
   } catch {
-    return false;
+    return null;
   }
 }

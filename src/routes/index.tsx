@@ -76,6 +76,7 @@ import {
   updateWorkspaceByToken,
   type ShareLinks,
   type WorkspaceLinks,
+  type SharedPushResult,
 } from "@/lib/sync-api";
 import { fmt } from "@/lib/utils";
 
@@ -139,7 +140,7 @@ function sanitizeEntries(arr: unknown): Entry[] {
 
 
 function serializeForSync(b: BudgetRow): string {
-  const { undoStack: _u, redoStack: _r, syncSource: _s, roToken: _ro, ...rest } = b;
+  const { undoStack: _u, redoStack: _r, syncSource: _s, roToken: _ro, serverUpdatedAt: _sa, ...rest } = b;
   return JSON.stringify(rest);
 }
 
@@ -159,6 +160,7 @@ function deserializeFromSync(id: string, data: string, updatedAt: number): Budge
     archived: parsed.archived ?? false,
     archivedAt: parsed.archivedAt,
     updatedAt,
+    serverUpdatedAt: updatedAt,
     order: parsed.order ?? Date.now(),
     undoStack: [],
     redoStack: [],
@@ -167,6 +169,14 @@ function deserializeFromSync(id: string, data: string, updatedAt: number): Budge
 }
 
 type SyncStatus = "idle" | "syncing" | "synced" | "error";
+
+type ConflictItem = {
+  budgetId: string;
+  budgetTitle: string;
+  localRow: BudgetRow;
+  serverData: string;
+  serverUpdatedAt: number;
+};
 
 function SyncIcon({ status }: { status: SyncStatus; className?: string }) {
   if (status === "syncing")
@@ -190,6 +200,7 @@ function BudgetApp() {
   // Sync state
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
+  const [conflicts, setConflicts] = useState<ConflictItem[]>([]);
 
   // Share dialog state
   const [shareOpen, setShareOpen] = useState<string | null>(null); // budget id
@@ -281,6 +292,7 @@ function BudgetApp() {
       id: b.id,
       data: serializeForSync(b),
       updatedAt: b.updatedAt,
+      expectedUpdatedAt: b.serverUpdatedAt,
     }));
 
     setSyncStatus("syncing");
@@ -290,9 +302,28 @@ function BudgetApp() {
       return;
     }
 
-    // Merge server budgets into local state
+    // Register server-reported conflicts
+    const conflictIds = new Set(result.conflicts.map((c) => c.id));
+    for (const conflict of result.conflicts) {
+      const localRow = localRows.find((b) => b.id === conflict.id);
+      if (localRow) {
+        setConflicts((prev) =>
+          prev.some((c) => c.budgetId === conflict.id) ? prev :
+          [...prev, {
+            budgetId: conflict.id,
+            budgetTitle: localRow.title,
+            localRow,
+            serverData: conflict.data,
+            serverUpdatedAt: conflict.updatedAt,
+          }]
+        );
+      }
+    }
+
+    // Merge non-conflicted server budgets into local state
     const merged: BudgetRow[] = [...localRows];
-    for (const sb of result) {
+    for (const sb of result.budgets) {
+      if (conflictIds.has(sb.id)) continue;
       const localIdx = merged.findIndex((b) => b.id === sb.id);
       if (localIdx === -1) {
         const nb = deserializeFromSync(sb.id, sb.data, sb.updatedAt);
@@ -301,10 +332,15 @@ function BudgetApp() {
       } else if (sb.updatedAt > merged[localIdx].updatedAt) {
         const nb = {
           ...deserializeFromSync(sb.id, sb.data, sb.updatedAt),
-          roToken: merged[localIdx].roToken, // preserve so owner SSE keeps watching
+          roToken: merged[localIdx].roToken,
         };
         await putBudget(nb);
         merged[localIdx] = nb;
+      } else if (merged[localIdx].serverUpdatedAt === undefined) {
+        // First sync for a legacy budget — record the server timestamp
+        const updated = { ...merged[localIdx], serverUpdatedAt: sb.updatedAt };
+        await putBudget(updated);
+        merged[localIdx] = updated;
       }
     }
 
@@ -313,7 +349,6 @@ function BudgetApp() {
     setSyncStatus("synced");
     setTimeout(() => setSyncStatus("idle"), 3000);
 
-    // Also refresh shared budgets
     await refreshSharedBudgets(merged);
   };
 
@@ -343,7 +378,28 @@ function BudgetApp() {
       const src = b.syncSource!;
       const remote = await fetchByToken(src.token);
       if (!remote) continue;
-      if (remote.updatedAt > b.updatedAt) {
+
+      const base = b.serverUpdatedAt;
+      const serverIsNewer = base === undefined
+        ? remote.updatedAt > b.updatedAt
+        : remote.updatedAt !== base;
+      const localHasChanges = base !== undefined && b.updatedAt !== base;
+
+      if (serverIsNewer && localHasChanges) {
+        setConflicts((prev) =>
+          prev.some((c) => c.budgetId === b.id) ? prev :
+          [...prev, {
+            budgetId: b.id,
+            budgetTitle: b.title,
+            localRow: b,
+            serverData: remote.data,
+            serverUpdatedAt: remote.updatedAt,
+          }]
+        );
+        continue;
+      }
+
+      if (serverIsNewer) {
         let parsed: Partial<BudgetRow> = {};
         try { parsed = JSON.parse(remote.data) as Partial<BudgetRow>; } catch { /* keep */ }
         const updated: BudgetRow = {
@@ -353,6 +409,7 @@ function BudgetApp() {
           income: Array.isArray(parsed.income) ? parsed.income : b.income,
           expenses: Array.isArray(parsed.expenses) ? parsed.expenses : b.expenses,
           updatedAt: remote.updatedAt,
+          serverUpdatedAt: remote.updatedAt,
           syncSource: { token: src.token, canWrite: remote.canWrite },
           undoStack: [],
           redoStack: [],
@@ -360,6 +417,11 @@ function BudgetApp() {
         };
         await putBudget(updated);
         setBudgets((arr) => arr.map((x) => (x.id === updated.id ? updated : x)));
+      } else if (localHasChanges) {
+        // Local has unsynced changes and server hasn't moved — re-queue push
+        syncDirtyRef.current.add(`shared:${b.id}`);
+        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+        syncTimerRef.current = setTimeout(() => void flushSync(), SYNC_DEBOUNCE_MS);
       }
     }
   };
@@ -438,10 +500,30 @@ function BudgetApp() {
         income: Array.isArray(parsed.income) ? parsed.income : cur.income,
         expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
         updatedAt: remoteUpdatedAt,
+        serverUpdatedAt: remoteUpdatedAt,
         undoStack: [],
         redoStack: [],
         mode: parsed.mode === "recording" ? "recording" : "editing",
       };
+    }
+
+    function checkSseConflict(cur: BudgetRow, remoteData: string, remoteUpdatedAt: number): boolean {
+      const base = cur.serverUpdatedAt;
+      if (base === undefined) return false;
+      const localChanged = cur.updatedAt !== base;
+      const serverChanged = remoteUpdatedAt !== base;
+      if (!localChanged || !serverChanged) return false;
+      setConflicts((prev) =>
+        prev.some((c) => c.budgetId === cur.id) ? prev :
+        [...prev, {
+          budgetId: cur.id,
+          budgetTitle: cur.title,
+          localRow: cur,
+          serverData: remoteData,
+          serverUpdatedAt: remoteUpdatedAt,
+        }]
+      );
+      return true;
     }
 
     // ── Shared (recipient) budgets ─────────────────────────────────────────
@@ -453,13 +535,16 @@ function BudgetApp() {
       es.onopen = () => {
         void fetchByToken(token).then((remote) => {
           if (!remote) return;
+          const cur = budgetsRef.current.find((x) => x.id === budgetId);
+          if (!cur?.syncSource) return;
+          if (checkSseConflict(cur, remote.data, remote.updatedAt)) return;
           setBudgets((arr) => {
-            const cur = arr.find((x) => x.id === budgetId);
-            if (!cur?.syncSource) return arr;
-            const patch = applyParsed(cur, remote.data, remote.updatedAt);
+            const latest = arr.find((x) => x.id === budgetId);
+            if (!latest?.syncSource) return arr;
+            const patch = applyParsed(latest, remote.data, remote.updatedAt);
             if (!patch) return arr;
             const updated: BudgetRow = {
-              ...cur, ...patch,
+              ...latest, ...patch,
               syncSource: { token, canWrite: remote.canWrite },
             };
             void putBudget(updated);
@@ -470,12 +555,15 @@ function BudgetApp() {
 
       es.onmessage = (event) => {
         const payload = JSON.parse(event.data as string) as { data: string; updatedAt: number };
+        const cur = budgetsRef.current.find((x) => x.id === budgetId);
+        if (!cur?.syncSource) return;
+        if (checkSseConflict(cur, payload.data, payload.updatedAt)) return;
         setBudgets((arr) => {
-          const cur = arr.find((x) => x.id === budgetId);
-          if (!cur?.syncSource) return arr;
-          const patch = applyParsed(cur, payload.data, payload.updatedAt);
+          const latest = arr.find((x) => x.id === budgetId);
+          if (!latest?.syncSource) return arr;
+          const patch = applyParsed(latest, payload.data, payload.updatedAt);
           if (!patch) return arr;
-          const updated: BudgetRow = { ...cur, ...patch, syncSource: cur.syncSource };
+          const updated: BudgetRow = { ...latest, ...patch, syncSource: latest.syncSource };
           void putBudget(updated);
           return arr.map((x) => (x.id === budgetId ? updated : x));
         });
@@ -493,12 +581,15 @@ function BudgetApp() {
       es.onopen = () => {
         void fetchByToken(token).then((remote) => {
           if (!remote) return;
+          const cur = budgetsRef.current.find((x) => x.id === budgetId);
+          if (!cur || cur.syncSource) return;
+          if (checkSseConflict(cur, remote.data, remote.updatedAt)) return;
           setBudgets((arr) => {
-            const cur = arr.find((x) => x.id === budgetId);
-            if (!cur || cur.syncSource) return arr;
-            const patch = applyParsed(cur, remote.data, remote.updatedAt);
+            const latest = arr.find((x) => x.id === budgetId);
+            if (!latest || latest.syncSource) return arr;
+            const patch = applyParsed(latest, remote.data, remote.updatedAt);
             if (!patch) return arr;
-            const updated: BudgetRow = { ...cur, ...patch };
+            const updated: BudgetRow = { ...latest, ...patch };
             void putBudget(updated);
             return arr.map((x) => (x.id === budgetId ? updated : x));
           });
@@ -507,12 +598,15 @@ function BudgetApp() {
 
       es.onmessage = (event) => {
         const payload = JSON.parse(event.data as string) as { data: string; updatedAt: number };
+        const cur = budgetsRef.current.find((x) => x.id === budgetId);
+        if (!cur || cur.syncSource) return;
+        if (checkSseConflict(cur, payload.data, payload.updatedAt)) return;
         setBudgets((arr) => {
-          const cur = arr.find((x) => x.id === budgetId);
-          if (!cur || cur.syncSource) return arr;
-          const patch = applyParsed(cur, payload.data, payload.updatedAt);
+          const latest = arr.find((x) => x.id === budgetId);
+          if (!latest || latest.syncSource) return arr;
+          const patch = applyParsed(latest, payload.data, payload.updatedAt);
           if (!patch) return arr;
-          const updated: BudgetRow = { ...cur, ...patch };
+          const updated: BudgetRow = { ...latest, ...patch };
           void putBudget(updated);
           return arr.map((x) => (x.id === budgetId ? updated : x));
         });
@@ -612,28 +706,48 @@ function BudgetApp() {
             });
           });
         } else if (payload.type === "budget") {
-          setBudgets((arr) => {
-            const cur = arr.find(
-              (b) =>
-                b.syncSource?.token === token &&
-                b.syncSource.workspaceBudgetId === payload.budgetId,
-            );
-            if (!cur || payload.updatedAt <= cur.updatedAt) return arr;
-            let parsed: Partial<BudgetRow> = {};
-            try { parsed = JSON.parse(payload.data) as Partial<BudgetRow>; } catch { /* keep */ }
-            const updated: BudgetRow = {
-              ...cur,
-              title: typeof parsed.title === "string" ? parsed.title : cur.title,
-              subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
-              income: Array.isArray(parsed.income) ? parsed.income : cur.income,
-              expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
-              updatedAt: payload.updatedAt,
-              undoStack: [],
-              redoStack: [],
-            };
-            void putBudget(updated);
-            return arr.map((b) => (b.id === cur.id ? updated : b));
-          });
+          const wsCur = budgetsRef.current.find(
+            (b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId === payload.budgetId,
+          );
+          if (wsCur) {
+            const base = wsCur.serverUpdatedAt;
+            const localChanged = base !== undefined && wsCur.updatedAt !== base;
+            const serverChanged = base !== undefined && payload.updatedAt !== base;
+            if (localChanged && serverChanged) {
+              setConflicts((prev) =>
+                prev.some((c) => c.budgetId === wsCur.id) ? prev :
+                [...prev, {
+                  budgetId: wsCur.id,
+                  budgetTitle: wsCur.title,
+                  localRow: wsCur,
+                  serverData: payload.data,
+                  serverUpdatedAt: payload.updatedAt,
+                }]
+              );
+            } else {
+              setBudgets((arr) => {
+                const cur = arr.find(
+                  (b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId === payload.budgetId,
+                );
+                if (!cur || payload.updatedAt <= cur.updatedAt) return arr;
+                let parsed: Partial<BudgetRow> = {};
+                try { parsed = JSON.parse(payload.data) as Partial<BudgetRow>; } catch { /* keep */ }
+                const updated: BudgetRow = {
+                  ...cur,
+                  title: typeof parsed.title === "string" ? parsed.title : cur.title,
+                  subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
+                  income: Array.isArray(parsed.income) ? parsed.income : cur.income,
+                  expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
+                  updatedAt: payload.updatedAt,
+                  serverUpdatedAt: payload.updatedAt,
+                  undoStack: [],
+                  redoStack: [],
+                };
+                void putBudget(updated);
+                return arr.map((b) => (b.id === cur.id ? updated : b));
+              });
+            }
+          }
         }
       };
 
@@ -699,30 +813,76 @@ function BudgetApp() {
           id: b.id,
           data: serializeForSync(b),
           updatedAt: b.updatedAt,
+          expectedUpdatedAt: b.serverUpdatedAt,
         }));
       const result = await syncOwnedBudgets(did, toSync);
-      if (!result) ok = false;
+      if (!result) {
+        ownedIds.forEach((id) => syncDirtyRef.current.add(id));
+        ok = false;
+      } else {
+        const conflictIds = new Set(result.conflicts.map((c) => c.id));
+        for (const conflict of result.conflicts) {
+          const localRow = budgetsRef.current.find((b) => b.id === conflict.id);
+          if (localRow) {
+            setConflicts((prev) =>
+              prev.some((c) => c.budgetId === conflict.id) ? prev :
+              [...prev, {
+                budgetId: conflict.id,
+                budgetTitle: localRow.title,
+                localRow,
+                serverData: conflict.data,
+                serverUpdatedAt: conflict.updatedAt,
+              }]
+            );
+          }
+        }
+        for (const b of budgetsRef.current.filter((b) => ownedIds.includes(b.id) && !conflictIds.has(b.id))) {
+          const updated = { ...b, serverUpdatedAt: b.updatedAt };
+          void putBudget(updated);
+          setBudgets((arr) => arr.map((x) => (x.id === b.id ? { ...x, serverUpdatedAt: b.updatedAt } : x)));
+        }
+      }
     }
 
     for (const localId of sharedKeys) {
       const b = budgetsRef.current.find((x) => x.id === localId);
       if (!b?.syncSource?.canWrite || !did) continue;
+      let pushResult: SharedPushResult;
       if (b.syncSource.workspaceBudgetId) {
-        const success = await updateWorkspaceByToken(
+        pushResult = await updateWorkspaceByToken(
           b.syncSource.token,
           b.syncSource.workspaceBudgetId,
           serializeForSync(b),
           b.updatedAt,
+          b.serverUpdatedAt,
         );
-        if (!success) ok = false;
       } else {
-        const success = await updateByToken(
+        pushResult = await updateByToken(
           b.syncSource.token,
           did,
           serializeForSync(b),
           b.updatedAt,
+          b.serverUpdatedAt,
         );
-        if (!success) ok = false;
+      }
+      if (pushResult === null) {
+        syncDirtyRef.current.add(`shared:${localId}`);
+        ok = false;
+      } else if ("conflict" in pushResult) {
+        setConflicts((prev) =>
+          prev.some((c) => c.budgetId === b.id) ? prev :
+          [...prev, {
+            budgetId: b.id,
+            budgetTitle: b.title,
+            localRow: b,
+            serverData: pushResult.serverData,
+            serverUpdatedAt: pushResult.serverUpdatedAt,
+          }]
+        );
+      } else {
+        const updated = { ...b, serverUpdatedAt: b.updatedAt };
+        void putBudget(updated);
+        setBudgets((arr) => arr.map((x) => (x.id === b.id ? { ...x, serverUpdatedAt: b.updatedAt } : x)));
       }
     }
 
@@ -968,6 +1128,42 @@ function BudgetApp() {
     }
     await deleteBudget(b.id);
     setBudgets((arr) => arr.filter((x) => x.id !== b.id));
+  };
+
+  const handleConflictKeepMine = (conflict: ConflictItem) => {
+    const newUpdatedAt = Date.now();
+    const updated: BudgetRow = { ...conflict.localRow, updatedAt: newUpdatedAt, serverUpdatedAt: newUpdatedAt };
+    void putBudget(updated);
+    setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+    if (updated.syncSource?.canWrite) {
+      syncDirtyRef.current.add(`shared:${updated.id}`);
+    } else if (!updated.syncSource) {
+      syncDirtyRef.current.add(updated.id);
+    }
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => void flushSync(), SYNC_DEBOUNCE_MS);
+    setConflicts((prev) => prev.filter((c) => c.budgetId !== conflict.budgetId));
+  };
+
+  const handleConflictUseTheirs = async (conflict: ConflictItem) => {
+    let parsed: Partial<BudgetRow> = {};
+    try { parsed = JSON.parse(conflict.serverData) as Partial<BudgetRow>; } catch { /* keep */ }
+    const updated: BudgetRow = {
+      ...conflict.localRow,
+      title: typeof parsed.title === "string" ? parsed.title : conflict.localRow.title,
+      subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : conflict.localRow.subtitle,
+      income: Array.isArray(parsed.income) ? parsed.income : conflict.localRow.income,
+      expenses: Array.isArray(parsed.expenses) ? parsed.expenses : conflict.localRow.expenses,
+      updatedAt: conflict.serverUpdatedAt,
+      serverUpdatedAt: conflict.serverUpdatedAt,
+      undoStack: [],
+      redoStack: [],
+    };
+    await putBudget(updated);
+    setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+    syncDirtyRef.current.delete(updated.id);
+    syncDirtyRef.current.delete(`shared:${updated.id}`);
+    setConflicts((prev) => prev.filter((c) => c.budgetId !== conflict.budgetId));
   };
 
   // budgetMode is stored on the active budget so it persists and syncs to all viewers
@@ -2002,7 +2198,88 @@ function BudgetApp() {
         </DialogContent>
       </Dialog>
 
+      {/* ── Conflict resolution dialog ─────────────────────────────── */}
+      {conflicts.length > 0 && (
+        <ConflictDialog
+          conflict={conflicts[0]}
+          remaining={conflicts.length - 1}
+          onKeepMine={() => handleConflictKeepMine(conflicts[0])}
+          onUseTheirs={() => void handleConflictUseTheirs(conflicts[0])}
+        />
+      )}
+
     </div>
+  );
+}
+
+function ConflictDialog({
+  conflict,
+  remaining,
+  onKeepMine,
+  onUseTheirs,
+}: {
+  conflict: ConflictItem;
+  remaining: number;
+  onKeepMine: () => void;
+  onUseTheirs: () => void;
+}) {
+  const local = conflict.localRow;
+  const localIncome = (local.income ?? []).reduce((s, e) => s + (e.amount || 0), 0);
+  const localExpenses = (local.expenses ?? []).reduce((s, e) => s + (e.amount || 0), 0);
+
+  let serverParsed: Partial<BudgetRow> = {};
+  try { serverParsed = JSON.parse(conflict.serverData) as Partial<BudgetRow>; } catch { /* keep */ }
+  const serverIncome = Array.isArray(serverParsed.income)
+    ? serverParsed.income.reduce((s: number, e: { amount?: number }) => s + (e.amount || 0), 0)
+    : 0;
+  const serverExpenses = Array.isArray(serverParsed.expenses)
+    ? serverParsed.expenses.reduce((s: number, e: { amount?: number }) => s + (e.amount || 0), 0)
+    : 0;
+
+  return (
+    <Dialog open>
+      <DialogContent className="max-w-md" onInteractOutside={(e) => e.preventDefault()}>
+        <DialogHeader>
+          <DialogTitle>Sync conflict in &quot;{conflict.budgetTitle}&quot;</DialogTitle>
+          <DialogDescription>
+            This budget was edited on two devices while offline. Choose which version to keep.
+            {remaining > 0 && (
+              <span className="ml-1 text-muted-foreground">({remaining} more conflict{remaining > 1 ? "s" : ""} queued)</span>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid grid-cols-2 gap-3 my-2">
+          <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-1">
+            <div className="text-xs font-semibold text-foreground">Your version</div>
+            <div className="text-xs text-muted-foreground">{(local.income ?? []).length} income · {(local.expenses ?? []).length} expenses</div>
+            <div className="text-xs">Income: <span className="font-medium">{fmt(localIncome)}</span></div>
+            <div className="text-xs">Expenses: <span className="font-medium">{fmt(localExpenses)}</span></div>
+          </div>
+          <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-1">
+            <div className="text-xs font-semibold text-foreground">Server version</div>
+            <div className="text-xs text-muted-foreground">
+              {Array.isArray(serverParsed.income) ? serverParsed.income.length : "?"} income · {Array.isArray(serverParsed.expenses) ? serverParsed.expenses.length : "?"} expenses
+            </div>
+            <div className="text-xs">Income: <span className="font-medium">{fmt(serverIncome)}</span></div>
+            <div className="text-xs">Expenses: <span className="font-medium">{fmt(serverExpenses)}</span></div>
+          </div>
+        </div>
+        <DialogFooter className="gap-2 sm:gap-2">
+          <button
+            onClick={onUseTheirs}
+            className="flex-1 border border-border rounded-md px-3 py-2 text-sm hover:bg-muted transition-colors"
+          >
+            Use server version
+          </button>
+          <button
+            onClick={onKeepMine}
+            className="flex-1 bg-primary text-primary-foreground rounded-md px-3 py-2 text-sm hover:bg-primary/90 transition-colors"
+          >
+            Keep my changes
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

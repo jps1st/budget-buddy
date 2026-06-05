@@ -315,7 +315,7 @@ type DbWorkspace = {
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
 async function handleSync(deviceId: string, request: Request): Promise<Response> {
-  let body: { budgets: { id: string; data: string; updatedAt: number }[] };
+  let body: { budgets: { id: string; data: string; updatedAt: number; expectedUpdatedAt?: number }[] };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -325,7 +325,7 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
   if (!Array.isArray(body?.budgets)) return json({ error: "Invalid body" }, 400);
 
   const findExisting = db.prepare(
-    "SELECT id, owner_device_id, updated_at FROM budgets WHERE id = ?",
+    "SELECT id, owner_device_id, data, updated_at FROM budgets WHERE id = ?",
   );
   const insertBudget = db.prepare(
     "INSERT INTO budgets (id, owner_device_id, data, updated_at) VALUES (?, ?, ?, ?)",
@@ -334,19 +334,28 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
     "UPDATE budgets SET data = ?, updated_at = ? WHERE id = ?",
   );
 
+  const conflicts: { id: string; data: string; updatedAt: number }[] = [];
+
   for (const b of body.budgets) {
     if (!b.id || typeof b.data !== "string" || typeof b.updatedAt !== "number") continue;
 
     const existing = findExisting.get(b.id) as
-      | { id: string; owner_device_id: string; updated_at: number }
+      | { id: string; owner_device_id: string; data: string; updated_at: number }
       | undefined;
 
     if (!existing) {
       insertBudget.run(b.id, deviceId, b.data, b.updatedAt);
-    } else if (existing.owner_device_id === deviceId && b.updatedAt >= existing.updated_at) {
-      updateBudget.run(b.data, b.updatedAt, b.id);
-      notifyWatchers(b.id, b.data, b.updatedAt);
-      notifyBudgetInWorkspaces(b.id, b.data, b.updatedAt);
+    } else if (existing.owner_device_id === deviceId) {
+      // Conflict: client expected a server version that has since been superseded
+      if (b.expectedUpdatedAt !== undefined && b.expectedUpdatedAt < existing.updated_at) {
+        conflicts.push({ id: b.id, data: existing.data, updatedAt: existing.updated_at });
+        continue;
+      }
+      if (b.updatedAt >= existing.updated_at) {
+        updateBudget.run(b.data, b.updatedAt, b.id);
+        notifyWatchers(b.id, b.data, b.updatedAt);
+        notifyBudgetInWorkspaces(b.id, b.data, b.updatedAt);
+      }
     }
   }
 
@@ -360,6 +369,7 @@ async function handleSync(deviceId: string, request: Request): Promise<Response>
       data: r.data,
       updatedAt: r.updated_at,
     })),
+    conflicts,
   });
 }
 
@@ -433,16 +443,20 @@ function handleGetByToken(token: string): Response {
 // PUT /api/t/:token — update budget via rw token
 async function handlePutByToken(token: string, request: Request): Promise<Response> {
   const budget = db
-    .prepare("SELECT id, updated_at FROM budgets WHERE rw_token = ?")
+    .prepare("SELECT id, data, updated_at FROM budgets WHERE rw_token = ?")
     .get(token) as DbBudget | undefined;
 
   if (!budget) return json({ error: "Not found or read-only" }, 403);
 
-  let body: { data: string; updatedAt: number };
+  let body: { data: string; updatedAt: number; expectedUpdatedAt?: number };
   try {
     body = (await request.json()) as typeof body;
   } catch {
     return json({ error: "Invalid JSON" }, 400);
+  }
+
+  if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt < budget.updated_at) {
+    return json({ conflict: true, data: budget.data, updatedAt: budget.updated_at }, 409);
   }
 
   if (body.updatedAt > budget.updated_at) {
@@ -642,7 +656,7 @@ async function handleUpdateWorkspaceByToken(token: string, request: Request): Pr
   const ws = db.prepare("SELECT id, rw_token FROM workspaces WHERE rw_token = ?").get(token) as DbWorkspace | undefined;
   if (!ws) return json({ error: "Not found or read-only" }, 403);
 
-  let body: { budgetId: string; data: string; updatedAt: number };
+  let body: { budgetId: string; data: string; updatedAt: number; expectedUpdatedAt?: number };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -652,8 +666,12 @@ async function handleUpdateWorkspaceByToken(token: string, request: Request): Pr
   const member = db.prepare("SELECT budget_id FROM workspace_budgets WHERE workspace_id = ? AND budget_id = ?").get(ws.id, body.budgetId) as { budget_id: string } | undefined;
   if (!member) return json({ error: "Budget not in workspace" }, 403);
 
-  const existing = db.prepare("SELECT id, updated_at FROM budgets WHERE id = ?").get(body.budgetId) as { id: string; updated_at: number } | undefined;
+  const existing = db.prepare("SELECT id, data, updated_at FROM budgets WHERE id = ?").get(body.budgetId) as { id: string; data: string; updated_at: number } | undefined;
   if (!existing) return json({ error: "Budget not found" }, 404);
+
+  if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt < existing.updated_at) {
+    return json({ conflict: true, data: existing.data, updatedAt: existing.updated_at }, 409);
+  }
 
   if (body.updatedAt > existing.updated_at) {
     db.prepare("UPDATE budgets SET data = ?, updated_at = ? WHERE id = ?").run(body.data, body.updatedAt, body.budgetId);

@@ -31,6 +31,7 @@ export type BudgetRow = {
   archived: boolean;
   archivedAt?: number;
   updatedAt: number;
+  serverUpdatedAt?: number; // last updatedAt received FROM the server; undefined = never synced
   order: number;
   roToken?: string;        // set on owner's budget after sharing is enabled; used for SSE
   syncSource?: SyncSource; // set for budgets opened via a share link
