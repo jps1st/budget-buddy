@@ -1035,11 +1035,11 @@ function BudgetApp() {
   const displayTotalIncome   = budgetMode === "recording" ? totalIncomeRecording   : totalIncome;
   const displayTotalExpenses = budgetMode === "recording" ? totalExpensesRecording : totalExpenses;
 
-  const leftover = totalIncome - totalExpenses;
+  const leftover = displayTotalIncome - displayTotalExpenses;
 
   const chartData = [
-    { name: "Total income", value: Math.max(totalIncome, 0), color: "var(--chart-1)" },
-    { name: "Total expenses", value: Math.max(totalExpenses, 0), color: "var(--chart-2)" },
+    { name: budgetMode === "recording" ? "Remaining income" : "Total income", value: Math.max(displayTotalIncome, 0), color: "var(--chart-1)" },
+    { name: budgetMode === "recording" ? "Remaining budget" : "Total expenses", value: Math.max(displayTotalExpenses, 0), color: "var(--chart-2)" },
     { name: "Left over", value: Math.max(leftover, 0), color: "var(--chart-3)" },
   ].filter((d) => d.value > 0);
 
@@ -1662,13 +1662,15 @@ function BudgetApp() {
               />
             </div>
 
-            {budgetMode === "editing" && <div className="space-y-6">
+            <div className="space-y-6">
               <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
                 <div className="bg-leftover text-leftover-foreground px-4 py-2.5 text-sm font-semibold tracking-wide uppercase">
                   Money Left Over
                 </div>
                 <div className="flex items-center justify-between px-4 py-3">
-                  <span className="text-sm font-medium">Income minus expenses</span>
+                  <span className="text-sm font-medium">
+                    {budgetMode === "recording" ? "Remaining income vs remaining budget" : "Income minus expenses"}
+                  </span>
                   <span
                     className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}
                   >
@@ -1721,12 +1723,12 @@ function BudgetApp() {
 
               <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
                 <div className="grid grid-cols-3 gap-4 text-center">
-                  <Stat label="Income" value={displayTotalIncome} colorVar="--income" />
-                  <Stat label="Expenses" value={displayTotalExpenses} colorVar="--expense" />
+                  <Stat label={budgetMode === "recording" ? "Rem. income" : "Income"} value={displayTotalIncome} colorVar="--income" />
+                  <Stat label={budgetMode === "recording" ? "Rem. budget" : "Expenses"} value={displayTotalExpenses} colorVar="--expense" />
                   <Stat label="Left over" value={leftover} colorVar="--leftover" />
                 </div>
               </div>
-            </div>}
+            </div>
           </div>
 
           <footer className="mt-10 text-center text-xs text-muted-foreground">
