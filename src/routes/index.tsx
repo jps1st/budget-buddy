@@ -1217,6 +1217,36 @@ function BudgetApp() {
     setActiveIdState(withSource.id);
   };
 
+  const moveBudgetToSharedWorkspace = async (budgetId: string, ws: WorkspaceRow) => {
+    if (!ws.syncSource?.canWrite) return;
+    const b = budgetsRef.current.find((x) => x.id === budgetId);
+    if (!b) return;
+    const updatedAt = Date.now();
+    const result = await createBudgetInWorkspace(ws.syncSource.token, serializeForSync(b), updatedAt);
+    if (!result) return;
+    // Remove from any owned workspaces
+    for (const w of workspaces) {
+      if (!w.syncSource && w.budgetIds.includes(budgetId)) {
+        if (deviceId) await removeBudgetFromWorkspace(w.id, budgetId, deviceId);
+        const updated = { ...w, budgetIds: w.budgetIds.filter((id) => id !== budgetId) };
+        await putWorkspace(updated);
+        setWorkspaces((list) => list.map((x) => (x.id === w.id ? updated : x)));
+      }
+    }
+    const withSource: BudgetRow = {
+      ...b,
+      updatedAt,
+      serverUpdatedAt: updatedAt,
+      syncSource: { token: ws.syncSource.token, canWrite: true, workspaceBudgetId: result.budgetId },
+    };
+    await putBudget(withSource);
+    setBudgets((arr) => arr.map((x) => (x.id === budgetId ? withSource : x)));
+    setWorkspaces((list) =>
+      list.map((w) => (w.id === ws.id ? { ...w, budgetIds: [...w.budgetIds, budgetId] } : w)),
+    );
+    setExpandedWs((s) => new Set([...s, ws.id]));
+  };
+
   const deleteWorkspaceFn = async (id: string) => {
     if (!deviceId) return;
     await deleteWorkspaceAPI(id, deviceId);
@@ -1927,16 +1957,25 @@ function BudgetApp() {
             <DialogTitle>Move to workspace</DialogTitle>
           </DialogHeader>
           <div className="space-y-1">
-            {workspaces.filter((w) => !w.syncSource).map((ws) => (
+            {workspaces.filter((w) => !w.syncSource || w.syncSource.canWrite).map((ws) => (
               <button
                 key={ws.id}
-                onClick={() => { void assignBudgetToWorkspace(moveToWsTarget!, ws.id); setMoveToWsTarget(null); }}
+                onClick={() => {
+                  if (ws.syncSource) {
+                    void moveBudgetToSharedWorkspace(moveToWsTarget!, ws);
+                  } else {
+                    void assignBudgetToWorkspace(moveToWsTarget!, ws.id);
+                  }
+                  setMoveToWsTarget(null);
+                }}
                 className="w-full text-left px-3 py-2 rounded hover:bg-muted text-sm flex items-center gap-2"
               >
-                <FolderClosed className="size-4" /> {ws.name}
+                <FolderClosed className="size-4" />
+                <span className="flex-1">{ws.name}</span>
+                {ws.syncSource && <Link2 className="size-3 text-muted-foreground/60" />}
               </button>
             ))}
-            {workspaces.filter((w) => !w.syncSource).length === 0 && (
+            {workspaces.filter((w) => !w.syncSource || w.syncSource.canWrite).length === 0 && (
               <p className="text-sm text-muted-foreground px-3">No workspaces yet. Create one first.</p>
             )}
           </div>
