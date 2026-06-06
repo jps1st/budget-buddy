@@ -1455,6 +1455,15 @@ function BudgetApp() {
                       <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
                     )}
                     <span className="flex-1 text-sm truncate text-muted-foreground">{ws.name}</span>
+                    {ws.syncSource && (
+                      <span
+                        title={ws.syncSource.canWrite ? "Shared workspace · can edit" : "Shared workspace · read only"}
+                        className="flex items-center gap-0.5 text-[10px] text-muted-foreground/60 shrink-0"
+                      >
+                        <Link2 className="size-3" />
+                        <span>{ws.syncSource.canWrite ? "edit" : "view"}</span>
+                      </span>
+                    )}
                     {(!ws.syncSource || ws.syncSource.canWrite) && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
