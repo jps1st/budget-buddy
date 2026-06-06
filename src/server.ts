@@ -682,6 +682,54 @@ async function handleUpdateWorkspaceByToken(token: string, request: Request): Pr
   return json({ ok: true });
 }
 
+// POST /api/w/:token/budgets — create a new budget inside workspace (write-access users)
+async function handleCreateBudgetInWorkspace(token: string, request: Request): Promise<Response> {
+  const ws = db.prepare("SELECT id, rw_token FROM workspaces WHERE rw_token = ?").get(token) as DbWorkspace | undefined;
+  if (!ws) return json({ error: "Not found or read-only" }, 403);
+
+  let body: { data: string; updatedAt: number };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  if (typeof body?.data !== "string" || typeof body?.updatedAt !== "number") return json({ error: "Invalid body" }, 400);
+
+  const budgetId = generateUUID();
+  db.prepare("INSERT INTO budgets (id, owner_device_id, data, updated_at) VALUES (?, NULL, ?, ?)").run(budgetId, body.data, body.updatedAt);
+  const countRow = db.prepare("SELECT COUNT(*) as cnt FROM workspace_budgets WHERE workspace_id = ?").get(ws.id) as { cnt: number };
+  db.prepare("INSERT INTO workspace_budgets (workspace_id, budget_id, position) VALUES (?, ?, ?)").run(ws.id, budgetId, countRow.cnt);
+  notifyWsStructureChange(ws.id);
+  return json({ budgetId });
+}
+
+// PATCH /api/w/:token — rename workspace via rw token
+async function handleRenameWorkspaceByToken(token: string, request: Request): Promise<Response> {
+  const ws = db.prepare("SELECT id FROM workspaces WHERE rw_token = ?").get(token) as { id: string } | undefined;
+  if (!ws) return json({ error: "Not found or read-only" }, 403);
+
+  let body: { name: string };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
+  if (typeof body?.name !== "string" || !body.name.trim()) return json({ error: "Invalid body" }, 400);
+
+  db.prepare("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?").run(body.name.trim(), Date.now(), ws.id);
+  notifyWsStructureChange(ws.id);
+  return json({ ok: true });
+}
+
+// DELETE /api/w/:token/budgets/:budgetId — remove budget from workspace via rw token
+function handleRemoveBudgetFromWorkspaceByToken(token: string, budgetId: string): Response {
+  const ws = db.prepare("SELECT id FROM workspaces WHERE rw_token = ?").get(token) as { id: string } | undefined;
+  if (!ws) return json({ error: "Not found or read-only" }, 403);
+  db.prepare("DELETE FROM workspace_budgets WHERE workspace_id = ? AND budget_id = ?").run(ws.id, budgetId);
+  notifyWsStructureChange(ws.id);
+  return json({ ok: true });
+}
+
 // ─── API router ───────────────────────────────────────────────────────────────
 
 async function handleApiRequest(request: Request, url: URL): Promise<Response> {
@@ -747,7 +795,12 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
   if (wsTokenMatch) {
     if (method === "GET") return handleGetWorkspaceByToken(wsTokenMatch[1]);
     if (method === "PUT") return handleUpdateWorkspaceByToken(wsTokenMatch[1], request);
+    if (method === "PATCH") return handleRenameWorkspaceByToken(wsTokenMatch[1], request);
   }
+  const wsTokenBudgetsMatch = path.match(/^\/api\/w\/([A-Za-z0-9]{32})\/budgets$/);
+  if (wsTokenBudgetsMatch && method === "POST") return handleCreateBudgetInWorkspace(wsTokenBudgetsMatch[1], request);
+  const wsTokenBudgetIdMatch = path.match(/^\/api\/w\/([A-Za-z0-9]{32})\/budgets\/(.+)$/);
+  if (wsTokenBudgetIdMatch && method === "DELETE") return handleRemoveBudgetFromWorkspaceByToken(wsTokenBudgetIdMatch[1], wsTokenBudgetIdMatch[2]);
 
   const deviceId = request.headers.get("X-Device-Id");
   if (!deviceId) return json({ error: "Missing X-Device-Id header" }, 401);

@@ -70,6 +70,9 @@ import {
   deleteWorkspaceAPI,
   addBudgetToWorkspace,
   removeBudgetFromWorkspace,
+  createBudgetInWorkspace,
+  renameWorkspaceByToken,
+  removeBudgetFromWorkspaceByToken,
   getWorkspaceLinks,
   revokeWorkspaceLinks,
   fetchWorkspaceByToken,
@@ -1181,11 +1184,37 @@ function BudgetApp() {
   };
 
   const renameWorkspaceFn = async (id: string, name: string) => {
-    if (!deviceId) return;
-    await renameWorkspace(id, name, deviceId);
-    setWorkspaces((ws) => ws.map((w) => (w.id === id ? { ...w, name } : w)));
-    const current = workspaces.find((w) => w.id === id);
-    if (current) await putWorkspace({ ...current, name });
+    const ws = workspaces.find((w) => w.id === id);
+    if (!ws) return;
+    if (ws.syncSource) {
+      await renameWorkspaceByToken(ws.syncSource.token, name);
+    } else {
+      if (!deviceId) return;
+      await renameWorkspace(id, name, deviceId);
+    }
+    setWorkspaces((list) => list.map((w) => (w.id === id ? { ...w, name } : w)));
+    if (ws) await putWorkspace({ ...ws, name });
+  };
+
+  const newBudgetInSharedWorkspace = async (ws: WorkspaceRow) => {
+    if (!ws.syncSource?.canWrite) return;
+    const b = createBudget({ title: "Untitled budget", order: Date.now() });
+    const updatedAt = Date.now();
+    const result = await createBudgetInWorkspace(ws.syncSource.token, serializeForSync(b), updatedAt);
+    if (!result) return;
+    const withSource: BudgetRow = {
+      ...b,
+      updatedAt,
+      serverUpdatedAt: updatedAt,
+      syncSource: { token: ws.syncSource.token, canWrite: true, workspaceBudgetId: result.budgetId },
+    };
+    await putBudget(withSource);
+    setBudgets((arr) => [...arr, withSource]);
+    setWorkspaces((list) =>
+      list.map((w) => (w.id === ws.id ? { ...w, budgetIds: [...w.budgetIds, withSource.id] } : w)),
+    );
+    setExpandedWs((s) => new Set([...s, ws.id]));
+    setActiveIdState(withSource.id);
   };
 
   const deleteWorkspaceFn = async (id: string) => {
@@ -1396,7 +1425,7 @@ function BudgetApp() {
                       <FolderClosed className="size-3.5 shrink-0 text-muted-foreground" />
                     )}
                     <span className="flex-1 text-sm truncate text-muted-foreground">{ws.name}</span>
-                    {!ws.syncSource && (
+                    {(!ws.syncSource || ws.syncSource.canWrite) && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <button
@@ -1408,21 +1437,27 @@ function BudgetApp() {
                           </button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="start">
+                          {!ws.syncSource && (
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void openWsShareDialog(ws.id);
+                              }}
+                            >
+                              <Share2 className="size-3.5 mr-2" /> Share workspace
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             onClick={(e) => {
                               e.stopPropagation();
-                              void openWsShareDialog(ws.id);
-                            }}
-                          >
-                            <Share2 className="size-3.5 mr-2" /> Share workspace
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const b = createBudget({ title: "Untitled budget", order: Date.now() });
-                              addBudget(b);
-                              void assignBudgetToWorkspace(b.id, ws.id);
-                              setExpandedWs((s) => new Set([...s, ws.id]));
+                              if (ws.syncSource) {
+                                void newBudgetInSharedWorkspace(ws);
+                              } else {
+                                const b = createBudget({ title: "Untitled budget", order: Date.now() });
+                                addBudget(b);
+                                void assignBudgetToWorkspace(b.id, ws.id);
+                                setExpandedWs((s) => new Set([...s, ws.id]));
+                              }
                             }}
                           >
                             <Plus className="size-3.5 mr-2" /> New budget here
@@ -1437,15 +1472,17 @@ function BudgetApp() {
                           >
                             Rename
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (confirm(`Delete workspace "${ws.name}"? Budgets will not be deleted.`))
-                                void deleteWorkspaceFn(ws.id);
-                            }}
-                          >
-                            Delete folder
-                          </DropdownMenuItem>
+                          {!ws.syncSource && (
+                            <DropdownMenuItem
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (confirm(`Delete workspace "${ws.name}"? Budgets will not be deleted.`))
+                                  void deleteWorkspaceFn(ws.id);
+                              }}
+                            >
+                              Delete folder
+                            </DropdownMenuItem>
+                          )}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     )}

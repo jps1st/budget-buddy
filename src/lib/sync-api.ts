@@ -212,6 +212,48 @@ export async function revokeWorkspaceLinks(workspaceId: string, deviceId: string
   return !!res?.ok;
 }
 
+export async function createBudgetInWorkspace(
+  token: string,
+  data: string,
+  updatedAt: number,
+): Promise<{ budgetId: string } | null> {
+  try {
+    const res = await fetch(`/api/w/${encodeURIComponent(token)}/budgets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data, updatedAt }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as { budgetId: string };
+  } catch {
+    return null;
+  }
+}
+
+export async function renameWorkspaceByToken(token: string, name: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/w/${encodeURIComponent(token)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function removeBudgetFromWorkspaceByToken(token: string, budgetId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/w/${encodeURIComponent(token)}/budgets/${encodeURIComponent(budgetId)}`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function fetchWorkspaceByToken(token: string): Promise<SharedWorkspaceResult | null> {
   try {
     const res = await fetch(`/api/w/${encodeURIComponent(token)}`);
