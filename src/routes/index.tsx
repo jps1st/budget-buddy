@@ -697,13 +697,14 @@ function BudgetApp() {
     if (!did) return;
 
     if (row.syncSource?.canWrite) {
-      // Shared budget with write access — debounce push
       syncDirtyRef.current.add(`shared:${row.id}`);
     } else if (!row.syncSource) {
-      // Owned budget
       syncDirtyRef.current.add(row.id);
+    } else {
+      return;
     }
 
+    setSyncStatus("syncing");
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     syncTimerRef.current = setTimeout(() => void flushSync(), SYNC_DEBOUNCE_MS);
   };
