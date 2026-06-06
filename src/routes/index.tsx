@@ -1,3 +1,5 @@
+declare const __APP_VERSION__: string;
+
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from "recharts";
@@ -27,6 +29,7 @@ import {
   FolderPlus,
   PencilLine,
   Receipt,
+  CloudUpload,
 } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import {
@@ -64,6 +67,8 @@ import {
   revokeShareLinks,
   fetchByToken,
   updateByToken,
+  forcePushByToken,
+  forcePushWorkspaceByToken,
   createWorkspace,
   listWorkspaces,
   renameWorkspace,
@@ -201,6 +206,10 @@ function BudgetApp() {
   const [deviceId, setDeviceId] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [conflicts, setConflicts] = useState<ConflictItem[]>([]);
+
+  // Force push state
+  const [forcePushOpen, setForcePushOpen] = useState(false);
+  const [forcePushing, setForcePushing] = useState(false);
 
   // Share dialog state
   const [shareOpen, setShareOpen] = useState<string | null>(null); // budget id
@@ -888,6 +897,33 @@ function BudgetApp() {
 
     setSyncStatus(ok ? "synced" : "error");
     if (ok) setTimeout(() => setSyncStatus("idle"), 3000);
+  };
+
+  const doForcePush = async () => {
+    if (!active || !active.syncSource?.canWrite) return;
+    setForcePushing(true);
+    setSyncStatus("syncing");
+    const data = serializeForSync(active);
+    const updatedAt = Date.now();
+    let ok = false;
+    if (active.syncSource.workspaceBudgetId) {
+      const result = await forcePushWorkspaceByToken(active.syncSource.token, active.syncSource.workspaceBudgetId, data, updatedAt);
+      ok = !!result;
+    } else {
+      const result = await forcePushByToken(active.syncSource.token, deviceIdRef.current!, data, updatedAt);
+      ok = !!result;
+    }
+    if (ok) {
+      const updated = { ...active, updatedAt, serverUpdatedAt: updatedAt };
+      void putBudget(updated);
+      setBudgets((arr) => arr.map((b) => (b.id === active.id ? updated : b)));
+      setSyncStatus("synced");
+      setTimeout(() => setSyncStatus("idle"), 3000);
+    } else {
+      setSyncStatus("error");
+    }
+    setForcePushing(false);
+    setForcePushOpen(false);
   };
 
   const persistRow = (row: BudgetRow) => {
@@ -1820,6 +1856,16 @@ function BudgetApp() {
                   <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
                   Live
                 </span>
+                {active.syncSource.canWrite && (
+                  <button
+                    onClick={() => setForcePushOpen(true)}
+                    className="ml-1 flex items-center gap-1 px-2 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors"
+                    title="Force push: override server with your local version"
+                  >
+                    <CloudUpload className="size-3" />
+                    Push
+                  </button>
+                )}
               </div>
             )}
           </header>
@@ -1929,6 +1975,7 @@ function BudgetApp() {
 
           <footer className="mt-10 text-center text-xs text-muted-foreground">
             Saved locally · Synced online when connected · Share budgets via read-only or editable links
+            <span className="ml-2 opacity-50">v{__APP_VERSION__}</span>
           </footer>
         </div>
       </div>
@@ -2195,6 +2242,35 @@ function BudgetApp() {
               Failed to generate links. Check your connection and try again.
             </p>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Force push confirmation dialog ─────────────────────────── */}
+      <Dialog open={forcePushOpen} onOpenChange={(o) => { if (!o && !forcePushing) setForcePushOpen(false); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Force push to all users?</DialogTitle>
+            <DialogDescription>
+              Your local version of <span className="font-medium text-foreground">{active?.title || "this budget"}</span> will be pushed to the server and will override any changes made by other users. Everyone with access will receive your version on their next sync.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              onClick={() => setForcePushOpen(false)}
+              disabled={forcePushing}
+              className="px-4 py-2 rounded-md border border-border text-sm hover:bg-muted disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => void doForcePush()}
+              disabled={forcePushing}
+              className="px-4 py-2 rounded-md bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors flex items-center gap-2"
+            >
+              {forcePushing ? <Loader2 className="size-4 animate-spin" /> : <CloudUpload className="size-4" />}
+              {forcePushing ? "Pushing…" : "Force Push"}
+            </button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

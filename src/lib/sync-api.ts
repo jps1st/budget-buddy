@@ -222,6 +222,38 @@ export async function fetchWorkspaceByToken(token: string): Promise<SharedWorksp
   }
 }
 
+export async function forcePushByToken(
+  token: string,
+  deviceId: string,
+  data: string,
+  updatedAt: number,
+): Promise<{ ok: true } | null> {
+  const res = await apiFetch(`/api/t/${encodeURIComponent(token)}`, {
+    deviceId,
+    method: "PUT",
+    body: JSON.stringify({ data, updatedAt, force: true }),
+  });
+  return res?.ok ? { ok: true } : null;
+}
+
+export async function forcePushWorkspaceByToken(
+  token: string,
+  budgetId: string,
+  data: string,
+  updatedAt: number,
+): Promise<{ ok: true } | null> {
+  try {
+    const res = await fetch(`/api/w/${encodeURIComponent(token)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ budgetId, data, updatedAt, force: true }),
+    });
+    return res.ok ? { ok: true } : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function updateWorkspaceByToken(
   token: string,
   budgetId: string,

@@ -5,6 +5,9 @@
 //     error logger plugins, and sandbox detection (port/host/strictPort).
 // You can pass additional config via defineConfig({ vite: { ... } }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
+import { readFileSync } from "fs";
+
+const { version } = JSON.parse(readFileSync("./package.json", "utf-8")) as { version: string };
 
 // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
 // @cloudflare/vite-plugin builds from this — wrangler.jsonc main alone is insufficient.
@@ -12,5 +15,10 @@ export default defineConfig({
   cloudflare: false,
   tanstackStart: {
     server: { entry: "server" },
+  },
+  vite: {
+    define: {
+      __APP_VERSION__: JSON.stringify(version),
+    },
   },
 });

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "==> Bumping version..."
+npm version patch --no-git-tag-version
+NEW_VERSION=$(node -p "require('./package.json').version")
+git add package.json
+git commit -m "chore: bump version to $NEW_VERSION"
+git push
+
 ssh node10 bash << 'REMOTE'
   set -euo pipefail
 

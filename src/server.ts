@@ -448,18 +448,18 @@ async function handlePutByToken(token: string, request: Request): Promise<Respon
 
   if (!budget) return json({ error: "Not found or read-only" }, 403);
 
-  let body: { data: string; updatedAt: number; expectedUpdatedAt?: number };
+  let body: { data: string; updatedAt: number; expectedUpdatedAt?: number; force?: boolean };
   try {
     body = (await request.json()) as typeof body;
   } catch {
     return json({ error: "Invalid JSON" }, 400);
   }
 
-  if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt < budget.updated_at) {
+  if (!body.force && body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt < budget.updated_at) {
     return json({ conflict: true, data: budget.data, updatedAt: budget.updated_at }, 409);
   }
 
-  if (body.updatedAt > budget.updated_at) {
+  if (body.force || body.updatedAt > budget.updated_at) {
     db.prepare("UPDATE budgets SET data = ?, updated_at = ? WHERE id = ?").run(
       body.data,
       body.updatedAt,
@@ -656,7 +656,7 @@ async function handleUpdateWorkspaceByToken(token: string, request: Request): Pr
   const ws = db.prepare("SELECT id, rw_token FROM workspaces WHERE rw_token = ?").get(token) as DbWorkspace | undefined;
   if (!ws) return json({ error: "Not found or read-only" }, 403);
 
-  let body: { budgetId: string; data: string; updatedAt: number; expectedUpdatedAt?: number };
+  let body: { budgetId: string; data: string; updatedAt: number; expectedUpdatedAt?: number; force?: boolean };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -669,11 +669,11 @@ async function handleUpdateWorkspaceByToken(token: string, request: Request): Pr
   const existing = db.prepare("SELECT id, data, updated_at FROM budgets WHERE id = ?").get(body.budgetId) as { id: string; data: string; updated_at: number } | undefined;
   if (!existing) return json({ error: "Budget not found" }, 404);
 
-  if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt < existing.updated_at) {
+  if (!body.force && body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt < existing.updated_at) {
     return json({ conflict: true, data: existing.data, updatedAt: existing.updated_at }, 409);
   }
 
-  if (body.updatedAt > existing.updated_at) {
+  if (body.force || body.updatedAt > existing.updated_at) {
     db.prepare("UPDATE budgets SET data = ?, updated_at = ? WHERE id = ?").run(body.data, body.updatedAt, body.budgetId);
     notifyWatchers(body.budgetId, body.data, body.updatedAt);
     notifyBudgetInWorkspaces(body.budgetId, body.data, body.updatedAt);
