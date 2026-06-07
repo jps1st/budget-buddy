@@ -185,6 +185,7 @@ export function BudgetTable({
           const displayRem = remainingOverrides?.[entry.id] ?? remaining;
           const txCount    = (entry.transactions ?? []).length;
           const isExpanded = isRecording && variant !== "leftover" && expandedRows.has(entry.id);
+          const isExhausted = isRecording && variant !== "leftover" && entry.amount > 0 && remaining <= 0;
 
           return (
             <div key={entry.id}>
@@ -200,7 +201,7 @@ export function BudgetTable({
                       ? "grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2"
                       : "grid grid-cols-[auto_1fr_auto_auto] items-center gap-2"
                 } ${isOver ? "border-t-2 border-primary bg-primary/5" : "hover:bg-muted/40"} ${
-                  isDragging ? "opacity-40" : ""
+                  isDragging ? "opacity-40" : isExhausted ? "opacity-50" : ""
                 } ${isRecording && variant !== "leftover" ? "cursor-pointer" : ""}`}
               >
                 {isPending ? (
@@ -238,7 +239,7 @@ export function BudgetTable({
                     <span className="text-muted-foreground/50 shrink-0">
                       {isExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                     </span>
-                    <span className="text-sm px-2 py-1 truncate flex items-center gap-1.5">
+                    <span className={`text-sm px-2 py-1 truncate flex items-center gap-1.5 ${isExhausted ? "line-through" : ""}`}>
                       {entry.label || <span className="text-muted-foreground/60">Item</span>}
                       {txCount > 0 && !isExpanded && (
                         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
