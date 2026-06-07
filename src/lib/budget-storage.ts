@@ -19,6 +19,7 @@ export type WorkspaceRow = {
   name: string;
   budgetIds: string[];
   order: number;
+  roToken?: string;
   syncSource?: { token: string; canWrite: boolean };
 };
 

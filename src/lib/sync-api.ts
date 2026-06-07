@@ -127,7 +127,7 @@ export async function updateByToken(
 }
 
 export type WorkspaceLinks = { roToken: string; rwToken: string };
-export type WorkspaceMeta = { id: string; name: string; budgetIds: string[] };
+export type WorkspaceMeta = { id: string; name: string; budgetIds: string[]; roToken?: string };
 export type SharedWorkspaceResult = {
   name: string;
   canWrite: boolean;

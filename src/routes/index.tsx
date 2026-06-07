@@ -329,6 +329,7 @@ function BudgetApp() {
       id: sw.id,
       name: sw.name,
       budgetIds: sw.budgetIds,
+      roToken: sw.roToken,
       order: localWs.find((lw) => lw.id === sw.id)?.order ?? Date.now(),
     }));
     for (const lw of localWs) {
@@ -559,24 +560,63 @@ function BudgetApp() {
   const wsTokensKey = useMemo(
     () =>
       workspaces
-        .filter((w) => !!w.syncSource)
-        .map((w) => `${w.id}:${w.syncSource!.token}`)
+        .filter((w) => !!w.syncSource || !!w.roToken)
+        .map((w) => `${w.id}:${w.syncSource?.token ?? w.roToken!}`)
         .sort()
         .join(","),
     [workspaces],
   );
 
   useEffect(() => {
-    const sharedWs = workspaces.filter((w) => !!w.syncSource);
-    if (sharedWs.length === 0) return;
+    const watchedWs = workspaces.filter((w) => !!w.syncSource || !!w.roToken);
+    if (watchedWs.length === 0) return;
 
     const sources: EventSource[] = [];
 
-    for (const ws of sharedWs) {
-      const { token, canWrite } = ws.syncSource!;
+    for (const ws of watchedWs) {
+      const isOwned = !ws.syncSource && !!ws.roToken;
+      const token = isOwned ? ws.roToken! : ws.syncSource!.token;
+      const canWrite = isOwned ? true : ws.syncSource!.canWrite;
       const wsId = ws.id;
 
       const es = new EventSource(`/api/wwatch/${token}`);
+
+      let firstOpen = true;
+      es.onopen = () => {
+        if (firstOpen) { firstOpen = false; return; }
+        // Reconnected after a drop — catch up on missed events
+        void fetchWorkspaceByToken(token).then((result) => {
+          if (!result) return;
+          setBudgets((arr) => {
+            let changed = false;
+            const next = arr.map((b) => {
+              const remote = isOwned
+                ? (!b.syncSource ? result.budgets.find((rb) => rb.id === b.id) : undefined)
+                : (b.syncSource?.token === token && b.syncSource.workspaceBudgetId
+                    ? result.budgets.find((rb) => rb.id === b.syncSource!.workspaceBudgetId)
+                    : undefined);
+              if (!remote || remote.updatedAt <= b.updatedAt) return b;
+              let parsed: Partial<BudgetRow> = {};
+              try { parsed = JSON.parse(remote.data) as Partial<BudgetRow>; } catch { /* keep */ }
+              changed = true;
+              const updated: BudgetRow = {
+                ...b,
+                title: typeof parsed.title === "string" ? parsed.title : b.title,
+                subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : b.subtitle,
+                income: Array.isArray(parsed.income) ? parsed.income : b.income,
+                expenses: Array.isArray(parsed.expenses) ? parsed.expenses : b.expenses,
+                updatedAt: remote.updatedAt,
+                serverUpdatedAt: remote.updatedAt,
+                undoStack: [],
+                redoStack: [],
+              };
+              void putBudget(updated);
+              return updated;
+            });
+            return changed ? next : arr;
+          });
+        });
+      };
 
       es.onmessage = (event) => {
         type WsPayload =
@@ -585,71 +625,123 @@ function BudgetApp() {
         const payload = JSON.parse(event.data as string) as WsPayload;
 
         if (payload.type === "structure") {
-          // Re-fetch the full workspace to get data for any newly-added budgets
-          void fetchWorkspaceByToken(token).then((result) => {
-            if (!result) return;
-
-            setBudgets((arr) => {
-              const currentServerIds = new Set(
-                arr
-                  .filter((b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId)
-                  .map((b) => b.syncSource!.workspaceBudgetId!),
-              );
-
-              const newRemote = result.budgets.filter((rb) => !currentServerIds.has(rb.id));
-              const removedServerIds = new Set(
-                [...currentServerIds].filter((id) => !payload.serverBudgetIds.includes(id)),
-              );
-
-              const added: BudgetRow[] = newRemote.map((rb) => {
-                let parsed: Partial<BudgetRow> = {};
-                try { parsed = JSON.parse(rb.data) as Partial<BudgetRow>; } catch { /* keep */ }
-                return {
-                  id: uuid(),
-                  title: typeof parsed.title === "string" ? parsed.title : "Shared Budget",
-                  subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : "",
-                  income: sanitizeEntries(parsed.income),
-                  expenses: sanitizeEntries(parsed.expenses),
-                  archived: false,
-                  updatedAt: rb.updatedAt,
-                  order: Date.now(),
-                  syncSource: { token, canWrite, workspaceBudgetId: rb.id },
-                  undoStack: [],
-                  redoStack: [],
-                };
+          if (isOwned) {
+            // For owned workspaces, editor-added budgets have owner_device_id = NULL.
+            // Re-fetch the workspace to pick up any new budgets added by editors.
+            void fetchWorkspaceByToken(token).then((result) => {
+              if (!result) return;
+              setBudgets((arr) => {
+                const ownedIds = new Set(
+                  arr.filter((b) => !b.syncSource).map((b) => b.id),
+                );
+                const sharedInWs = arr.filter(
+                  (b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId,
+                );
+                const currentServerIds = new Set(sharedInWs.map((b) => b.syncSource!.workspaceBudgetId!));
+                const newRemote = result.budgets.filter(
+                  (rb) => !ownedIds.has(rb.id) && !currentServerIds.has(rb.id),
+                );
+                const removedServerIds = new Set(
+                  [...currentServerIds].filter((id) => !payload.serverBudgetIds.includes(id)),
+                );
+                const added: BudgetRow[] = newRemote.map((rb) => {
+                  let parsed: Partial<BudgetRow> = {};
+                  try { parsed = JSON.parse(rb.data) as Partial<BudgetRow>; } catch { /* keep */ }
+                  return {
+                    id: uuid(),
+                    title: typeof parsed.title === "string" ? parsed.title : "Shared Budget",
+                    subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : "",
+                    income: sanitizeEntries(parsed.income),
+                    expenses: sanitizeEntries(parsed.expenses),
+                    archived: false,
+                    updatedAt: rb.updatedAt,
+                    order: Date.now(),
+                    syncSource: { token, canWrite, workspaceBudgetId: rb.id },
+                    undoStack: [],
+                    redoStack: [],
+                  };
+                });
+                for (const b of added) void putBudget(b);
+                const removedLocalIds = sharedInWs
+                  .filter((b) => removedServerIds.has(b.syncSource!.workspaceBudgetId!))
+                  .map((b) => b.id);
+                for (const id of removedLocalIds) void deleteBudget(id);
+                const next = [...arr.filter((b) => !removedLocalIds.includes(b.id)), ...added];
+                setWorkspaces((wsList) =>
+                  wsList.map((w) => {
+                    if (w.id !== wsId) return w;
+                    const keep = (w.budgetIds ?? []).filter((bid) => !removedLocalIds.includes(bid));
+                    const updated = { ...w, budgetIds: [...keep, ...added.map((b) => b.id)] };
+                    void putWorkspace(updated);
+                    return updated;
+                  }),
+                );
+                return next;
               });
-              for (const b of added) void putBudget(b);
-
-              const removedLocalIds = arr
-                .filter((b) => b.syncSource?.token === token && removedServerIds.has(b.syncSource.workspaceBudgetId ?? ""))
-                .map((b) => b.id);
-              for (const id of removedLocalIds) void deleteBudget(id);
-
-              const next = [...arr.filter((b) => !removedLocalIds.includes(b.id)), ...added];
-
-              // Keep workspace budgetIds in sync
-              setWorkspaces((wsList) =>
-                wsList.map((w) => {
-                  if (w.id !== wsId) return w;
-                  const keep = (w.budgetIds ?? []).filter((bid) => !removedLocalIds.includes(bid));
-                  const updated = { ...w, budgetIds: [...keep, ...added.map((b) => b.id)] };
-                  void putWorkspace(updated);
-                  return updated;
-                }),
-              );
-
-              return next;
             });
-          });
+          } else {
+            // Re-fetch the full workspace to get data for any newly-added budgets
+            void fetchWorkspaceByToken(token).then((result) => {
+              if (!result) return;
+
+              setBudgets((arr) => {
+                const currentServerIds = new Set(
+                  arr
+                    .filter((b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId)
+                    .map((b) => b.syncSource!.workspaceBudgetId!),
+                );
+
+                const newRemote = result.budgets.filter((rb) => !currentServerIds.has(rb.id));
+                const removedServerIds = new Set(
+                  [...currentServerIds].filter((id) => !payload.serverBudgetIds.includes(id)),
+                );
+
+                const added: BudgetRow[] = newRemote.map((rb) => {
+                  let parsed: Partial<BudgetRow> = {};
+                  try { parsed = JSON.parse(rb.data) as Partial<BudgetRow>; } catch { /* keep */ }
+                  return {
+                    id: uuid(),
+                    title: typeof parsed.title === "string" ? parsed.title : "Shared Budget",
+                    subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : "",
+                    income: sanitizeEntries(parsed.income),
+                    expenses: sanitizeEntries(parsed.expenses),
+                    archived: false,
+                    updatedAt: rb.updatedAt,
+                    order: Date.now(),
+                    syncSource: { token, canWrite, workspaceBudgetId: rb.id },
+                    undoStack: [],
+                    redoStack: [],
+                  };
+                });
+                for (const b of added) void putBudget(b);
+
+                const removedLocalIds = arr
+                  .filter((b) => b.syncSource?.token === token && removedServerIds.has(b.syncSource.workspaceBudgetId ?? ""))
+                  .map((b) => b.id);
+                for (const id of removedLocalIds) void deleteBudget(id);
+
+                const next = [...arr.filter((b) => !removedLocalIds.includes(b.id)), ...added];
+
+                // Keep workspace budgetIds in sync
+                setWorkspaces((wsList) =>
+                  wsList.map((w) => {
+                    if (w.id !== wsId) return w;
+                    const keep = (w.budgetIds ?? []).filter((bid) => !removedLocalIds.includes(bid));
+                    const updated = { ...w, budgetIds: [...keep, ...added.map((b) => b.id)] };
+                    void putWorkspace(updated);
+                    return updated;
+                  }),
+                );
+
+                return next;
+              });
+            });
+          }
         } else if (payload.type === "budget") {
-          const wsCur = budgetsRef.current.find(
-            (b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId === payload.budgetId,
-          );
-          if (wsCur) {
+          if (isOwned) {
+            // Owned budgets use the same ID locally and on the server
             setBudgets((arr) => {
-              const cur = arr.find(
-                (b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId === payload.budgetId,
-              );
+              const cur = arr.find((b) => b.id === payload.budgetId && !b.syncSource);
               if (!cur || payload.updatedAt <= cur.updatedAt) return arr;
               let parsed: Partial<BudgetRow> = {};
               try { parsed = JSON.parse(payload.data) as Partial<BudgetRow>; } catch { /* keep */ }
@@ -667,6 +759,33 @@ function BudgetApp() {
               void putBudget(updated);
               return arr.map((b) => (b.id === cur.id ? updated : b));
             });
+          } else {
+            const wsCur = budgetsRef.current.find(
+              (b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId === payload.budgetId,
+            );
+            if (wsCur) {
+              setBudgets((arr) => {
+                const cur = arr.find(
+                  (b) => b.syncSource?.token === token && b.syncSource.workspaceBudgetId === payload.budgetId,
+                );
+                if (!cur || payload.updatedAt <= cur.updatedAt) return arr;
+                let parsed: Partial<BudgetRow> = {};
+                try { parsed = JSON.parse(payload.data) as Partial<BudgetRow>; } catch { /* keep */ }
+                const updated: BudgetRow = {
+                  ...cur,
+                  title: typeof parsed.title === "string" ? parsed.title : cur.title,
+                  subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : cur.subtitle,
+                  income: Array.isArray(parsed.income) ? parsed.income : cur.income,
+                  expenses: Array.isArray(parsed.expenses) ? parsed.expenses : cur.expenses,
+                  updatedAt: payload.updatedAt,
+                  serverUpdatedAt: payload.updatedAt,
+                  undoStack: [],
+                  redoStack: [],
+                };
+                void putBudget(updated);
+                return arr.map((b) => (b.id === cur.id ? updated : b));
+              });
+            }
           }
         }
       };
@@ -1763,7 +1882,23 @@ function BudgetApp() {
                 title="Money Out"
                 variant="expense"
                 entries={active.expenses}
-                onChange={(expenses, immediate) => updateActive({ expenses }, immediate)}
+                onChange={(expenses, immediate) => {
+                  let ordered = expenses;
+                  if (immediate) {
+                    const toMove = expenses.filter((e) => {
+                      const prev = active.expenses.find((o) => o.id === e.id);
+                      if (!prev) return false;
+                      const prevSpent = (prev.transactions ?? []).reduce((s, t) => s + t.amount, 0);
+                      const newSpent = (e.transactions ?? []).reduce((s, t) => s + t.amount, 0);
+                      return prev.amount - prevSpent > 0 && e.amount - newSpent <= 0;
+                    });
+                    if (toMove.length > 0) {
+                      const movedIds = new Set(toMove.map((e) => e.id));
+                      ordered = [...expenses.filter((e) => !movedIds.has(e.id)), ...toMove];
+                    }
+                  }
+                  updateActive({ expenses: ordered }, immediate);
+                }}
                 totalLabel={budgetMode === "recording" ? "Remaining budget" : "Total expenses"}
                 total={displayTotalExpenses}
                 mode={budgetMode}

@@ -529,12 +529,17 @@ async function handleCreateWorkspace(deviceId: string, request: Request): Promis
 
 // GET /api/workspaces
 function handleListWorkspaces(deviceId: string): Response {
-  const rows = db.prepare("SELECT id, name FROM workspaces WHERE owner_device_id = ? ORDER BY updated_at ASC")
-    .all(deviceId) as { id: string; name: string }[];
+  const rows = db.prepare("SELECT id, name, ro_token FROM workspaces WHERE owner_device_id = ? ORDER BY updated_at ASC")
+    .all(deviceId) as { id: string; name: string; ro_token: string | null }[];
   const result = rows.map((w) => {
     const budgetRows = db.prepare("SELECT budget_id FROM workspace_budgets WHERE workspace_id = ? ORDER BY position ASC")
       .all(w.id) as { budget_id: string }[];
-    return { id: w.id, name: w.name, budgetIds: budgetRows.map((r) => r.budget_id) };
+    return {
+      id: w.id,
+      name: w.name,
+      budgetIds: budgetRows.map((r) => r.budget_id),
+      roToken: w.ro_token ?? undefined,
+    };
   });
   return json(result);
 }

@@ -152,9 +152,11 @@ export function BudgetTable({
       description: newTx.description.trim() || undefined,
       receiptUrl,
     };
-    updateEntry(entryId, {
-      transactions: [...(entries.find((e) => e.id === entryId)?.transactions ?? []), tx],
-    });
+
+    const withTx = entries.map((e) =>
+      e.id === entryId ? { ...e, transactions: [...(e.transactions ?? []), tx] } : e
+    );
+    onChange(withTx, true);
     setNewTx(emptyTx());
     setReceiptFile(null);
     setAddingTo(null);
@@ -195,7 +197,7 @@ export function BudgetTable({
                   isPending
                     ? "flex flex-col gap-2"
                     : isRecording
-                      ? "grid grid-cols-[auto_1fr_auto_auto] items-center gap-2"
+                      ? "grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2"
                       : "grid grid-cols-[auto_1fr_auto_auto] items-center gap-2"
                 } ${isOver ? "border-t-2 border-primary bg-primary/5" : "hover:bg-muted/40"} ${
                   isDragging ? "opacity-40" : ""
@@ -220,10 +222,21 @@ export function BudgetTable({
                 ) : isRecording ? (
                   /* ── Recording mode row ─────────────────────────────── */
                   <>
+                    {!readOnly && variant !== "leftover" ? (
+                      <span
+                        draggable
+                        onDragStart={(e) => { setDragId(entry.id); e.dataTransfer.effectAllowed = "move"; }}
+                        onDragEnd={() => { setDragId(null); setDragOverId(null); }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center justify-center cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground transition-colors shrink-0 select-none"
+                      >
+                        <GripVertical className="size-4" />
+                      </span>
+                    ) : (
+                      <span className="w-4 shrink-0" />
+                    )}
                     <span className="text-muted-foreground/50 shrink-0">
-                      {isExpanded
-                        ? <ChevronDown className="size-3.5" />
-                        : <ChevronRight className="size-3.5" />}
+                      {isExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
                     </span>
                     <span className="text-sm px-2 py-1 truncate flex items-center gap-1.5">
                       {entry.label || <span className="text-muted-foreground/60">Item</span>}
