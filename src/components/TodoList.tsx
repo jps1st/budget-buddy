@@ -181,6 +181,12 @@ export function TodoList({ entries, onChange, readOnly }: Props) {
                   Nest here
                 </button>
                 <button
+                  onClick={() => { reorder(pendingNest.fromId, pendingNest.toId); setPendingNest(null); }}
+                  className="flex-1 text-xs px-2 py-1.5 rounded bg-muted hover:bg-muted/70 transition-colors"
+                >
+                  Move
+                </button>
+                <button
                   onClick={() => setPendingNest(null)}
                   className="flex-1 text-xs px-2 py-1.5 rounded border border-border hover:bg-muted transition-colors"
                 >
