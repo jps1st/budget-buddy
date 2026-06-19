@@ -25,6 +25,7 @@ export function TodoList({ entries, onChange, readOnly }: Props) {
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [pendingNest, setPendingNest] = useState<{ fromId: string; toId: string } | null>(null);
 
   const toggleExpand = (id: string) =>
     setExpandedRows((s) => {
@@ -118,6 +119,23 @@ export function TodoList({ entries, onChange, readOnly }: Props) {
     onChange(result, true);
   };
 
+  const nestInto = (fromId: string, toId: string) => {
+    const from = entries.find((e) => e.id === fromId);
+    if (!from) return;
+    const fromAsChild: TodoChild = { id: from.id, label: from.label, checked: from.checked };
+    const fromKids: TodoChild[] = from.children ?? [];
+    const newEntries = entries
+      .filter((e) => e.id !== fromId)
+      .map((e) => {
+        if (e.id !== toId) return e;
+        const merged = [...(e.children ?? []), fromAsChild, ...fromKids];
+        return { ...e, checked: merged.length > 0 && merged.every((c) => c.checked), children: merged };
+      });
+    onChange(newEntries, true);
+    setExpandedRows((s) => new Set([...s, toId]));
+    setPendingNest(null);
+  };
+
   const totalCount = entries.reduce((s, e) => {
     const kids = e.children ?? [];
     return s + (kids.length > 0 ? kids.length : 1);
@@ -139,6 +157,39 @@ export function TodoList({ entries, onChange, readOnly }: Props) {
         )}
       </div>
       <div className="divide-y divide-border">
+        {pendingNest && (() => {
+          const from = entries.find((e) => e.id === pendingNest.fromId);
+          const to = entries.find((e) => e.id === pendingNest.toId);
+          if (!from || !to) return null;
+          const kidCount = (from.children ?? []).length;
+          return (
+            <div className="px-3 py-2.5 bg-todo/10 border-b border-todo/30 flex flex-col gap-2">
+              <span className="text-sm text-muted-foreground">
+                Move{" "}
+                <span className="font-medium text-foreground">{from.label || "Untitled"}</span>
+                {kidCount > 0 && (
+                  <> (+{kidCount} sub-item{kidCount !== 1 ? "s" : ""})</>
+                )}{" "}
+                under{" "}
+                <span className="font-medium text-foreground">{to.label || "Untitled"}</span>?
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => nestInto(pendingNest.fromId, pendingNest.toId)}
+                  className="flex-1 text-xs px-2 py-1.5 rounded bg-todo text-todo-foreground hover:bg-todo/90 transition-colors"
+                >
+                  Nest here
+                </button>
+                <button
+                  onClick={() => setPendingNest(null)}
+                  className="flex-1 text-xs px-2 py-1.5 rounded border border-border hover:bg-muted transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          );
+        })()}
         {entries.map((entry) => {
           const isOver = dragOverId === entry.id && dragId !== entry.id;
           const isDragging = dragId === entry.id;
@@ -153,7 +204,10 @@ export function TodoList({ entries, onChange, readOnly }: Props) {
                 onDragOver={(e) => { e.preventDefault(); setDragOverId(entry.id); }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  if (dragId) reorder(dragId, entry.id);
+                  if (dragId && dragId !== entry.id) {
+                    setPendingNest({ fromId: dragId, toId: entry.id });
+                  }
+                  setDragId(null);
                   setDragOverId(null);
                 }}
                 className={`group px-3 py-2 transition-colors ${
