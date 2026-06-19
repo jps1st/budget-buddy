@@ -43,6 +43,8 @@
   --color-expense-foreground: var(--expense-foreground);
   --color-leftover: var(--leftover);
   --color-leftover-foreground: var(--leftover-foreground);
+  --color-todo: var(--todo);
+  --color-todo-foreground: var(--todo-foreground);
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
@@ -76,6 +78,8 @@
   --expense-foreground: oklch(0.99 0 0);
   --leftover: oklch(0.7 0.16 230);
   --leftover-foreground: oklch(0.99 0 0);
+  --todo: oklch(0.65 0.16 290);
+  --todo-foreground: oklch(0.99 0 0);
 
   --chart-1: oklch(0.72 0.17 145);
   --chart-2: oklch(0.7 0.18 35);

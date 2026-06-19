@@ -1,5 +1,6 @@
 import { openDB, type IDBPDatabase } from "idb";
 import type { Entry } from "@/components/BudgetTable";
+import type { TodoEntry } from "@/components/TodoList";
 
 export type BudgetSnapshot = {
   title: string;
@@ -39,6 +40,8 @@ export type BudgetRow = {
   undoStack?: BudgetSnapshot[];
   redoStack?: BudgetSnapshot[];
   mode?: "editing" | "recording";
+  type?: "budget" | "todo";
+  todos?: TodoEntry[];
 };
 
 export interface Meta {

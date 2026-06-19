@@ -27,8 +27,10 @@ import {
   FolderPlus,
   PencilLine,
   Receipt,
+  ListTodo,
 } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
+import { TodoList, type TodoEntry } from "@/components/TodoList";
 import {
   Dialog,
   DialogContent,
@@ -140,6 +142,42 @@ function sanitizeEntries(arr: unknown): Entry[] {
     }));
 }
 
+function sanitizeTodos(arr: unknown): TodoEntry[] {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+    .map((e) => ({
+      id: typeof e.id === "string" ? e.id : uuid(),
+      label: typeof e.label === "string" ? e.label : "",
+      checked: e.checked === true,
+      children: Array.isArray(e.children)
+        ? (e.children as unknown[])
+            .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+            .map((c) => ({
+              id: typeof c.id === "string" ? c.id : uuid(),
+              label: typeof c.label === "string" ? c.label : "",
+              checked: c.checked === true,
+            }))
+        : undefined,
+    }));
+}
+
+function createTodoList(overrides: Partial<BudgetRow> = {}): BudgetRow {
+  return {
+    id: uuid(),
+    title: "My Todo List",
+    subtitle: "",
+    income: [],
+    expenses: [],
+    archived: false,
+    updatedAt: Date.now(),
+    order: Date.now(),
+    type: "todo",
+    todos: [],
+    ...overrides,
+  };
+}
+
 
 function serializeForSync(b: BudgetRow): string {
   const { undoStack: _u, redoStack: _r, syncSource: _s, roToken: _ro, serverUpdatedAt: _sa, ...rest } = b;
@@ -167,6 +205,8 @@ function deserializeFromSync(id: string, data: string, updatedAt: number): Budge
     undoStack: [],
     redoStack: [],
     mode: parsed.mode === "recording" ? "recording" : "editing",
+    type: parsed.type === "todo" ? "todo" : undefined,
+    todos: parsed.type === "todo" ? sanitizeTodos(parsed.todos) : undefined,
   };
 }
 
@@ -1058,6 +1098,16 @@ function BudgetApp() {
   const newBudget = () =>
     addBudget(createBudget({ title: "Untitled budget", order: Date.now() }));
 
+  const newTodoList = () =>
+    addBudget(createTodoList({ title: "Untitled todo list", order: Date.now() }));
+
+  const updateTodos = (todos: TodoEntry[], _immediate = true) => {
+    if (!active) return;
+    const updated: BudgetRow = { ...active, todos, updatedAt: Date.now() };
+    setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+    persistRow(updated);
+  };
+
   const duplicateTab = (b: BudgetRow) => {
     addBudget(
       createBudget({
@@ -1442,7 +1492,7 @@ function BudgetApp() {
         <aside className="fixed top-0 left-0 h-full z-50 w-56 border-r border-border bg-card flex flex-col lg:sticky lg:h-screen lg:shrink-0">
           <div className="flex items-center justify-between px-3 py-2.5 border-b border-border">
             <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Budgets
+              Lists
             </span>
             <div className="flex items-center gap-1.5">
               <button
@@ -1472,6 +1522,9 @@ function BudgetApp() {
                         : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                     }`}
                   >
+                    {b.type === "todo" && (
+                      <span title="Todo list"><ListTodo className="size-3 shrink-0 text-muted-foreground/60" /></span>
+                    )}
                     {isShared && (
                       <span title="Shared budget"><Link2 className="size-3 shrink-0 text-muted-foreground/60" /></span>
                     )}
@@ -1660,6 +1713,9 @@ function BudgetApp() {
                                 : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                             }`}
                           >
+                            {b.type === "todo" && (
+                              <span title="Todo list"><ListTodo className="size-3 shrink-0 text-muted-foreground/60" /></span>
+                            )}
                             {isShared && (
                               <span title="Shared budget"><Link2 className="size-3 shrink-0 text-muted-foreground/60" /></span>
                             )}
@@ -1758,6 +1814,12 @@ function BudgetApp() {
               <Plus className="size-4" /> New budget
             </button>
             <button
+              onClick={newTodoList}
+              className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
+            >
+              <ListTodo className="size-4" /> New todo list
+            </button>
+            <button
               onClick={() => setArchiveOpen(true)}
               className="w-full flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted/50 rounded transition-colors"
             >
@@ -1813,7 +1875,7 @@ function BudgetApp() {
               type="text"
               value={active.title}
               onChange={(e) => updateActive({ title: e.target.value })}
-              placeholder="Untitled budget"
+              placeholder={active.type === "todo" ? "Untitled todo list" : "Untitled budget"}
               readOnly={!!active.syncSource && !active.syncSource.canWrite}
               className="w-full bg-transparent text-4xl font-bold tracking-tight text-foreground outline-none focus:bg-card rounded px-1 -mx-1 read-only:cursor-default"
             />
@@ -1821,31 +1883,37 @@ function BudgetApp() {
               type="text"
               value={active.subtitle}
               onChange={(e) => updateActive({ subtitle: e.target.value })}
-              placeholder="Add a subtitle (e.g. May 2026, household, trip to Japan…)"
+              placeholder={
+                active.type === "todo"
+                  ? "Add a subtitle (e.g. Groceries, Packing list, Movie watchlist…)"
+                  : "Add a subtitle (e.g. May 2026, household, trip to Japan…)"
+              }
               readOnly={!!active.syncSource && !active.syncSource.canWrite}
               className="mt-1 w-full bg-transparent text-sm text-muted-foreground outline-none focus:bg-card rounded px-1 -mx-1 placeholder:text-muted-foreground/60 read-only:cursor-default"
             />
             <div className="mt-1 h-4">
               <SaveStatus status={syncStatus} />
             </div>
-            <button
-              onClick={() => {
-                if (!active) return;
-                const newMode = budgetMode === "editing" ? "recording" : "editing";
-                const updated = { ...active, mode: newMode as "editing" | "recording", updatedAt: Date.now() };
-                setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
-                persistRow(updated);
-              }}
-              className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                budgetMode === "editing"
-                  ? "bg-muted text-foreground border-border hover:bg-muted/70"
-                  : "bg-primary/10 text-primary border-primary/30 hover:bg-primary/20"
-              }`}
-            >
-              {budgetMode === "editing"
-                ? <><PencilLine className="size-3" /> Editing budget</>
-                : <><Receipt className="size-3" /> Recording transactions</>}
-            </button>
+            {active.type !== "todo" && (
+              <button
+                onClick={() => {
+                  if (!active) return;
+                  const newMode = budgetMode === "editing" ? "recording" : "editing";
+                  const updated = { ...active, mode: newMode as "editing" | "recording", updatedAt: Date.now() };
+                  setBudgets((arr) => arr.map((b) => (b.id === updated.id ? updated : b)));
+                  persistRow(updated);
+                }}
+                className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                  budgetMode === "editing"
+                    ? "bg-muted text-foreground border-border hover:bg-muted/70"
+                    : "bg-primary/10 text-primary border-primary/30 hover:bg-primary/20"
+                }`}
+              >
+                {budgetMode === "editing"
+                  ? <><PencilLine className="size-3" /> Editing budget</>
+                  : <><Receipt className="size-3" /> Recording transactions</>}
+              </button>
+            )}
             {active.syncSource && (
               <div className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
                 <Link2 className="size-3 shrink-0" />
@@ -1864,118 +1932,128 @@ function BudgetApp() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="space-y-6">
-              <BudgetTable
-                title="Money In"
-                variant="income"
-                entries={active.income}
-                onChange={(income, immediate) => updateActive({ income }, immediate)}
-                totalLabel={budgetMode === "recording" ? "Remaining income" : "Total income"}
-                total={displayTotalIncome}
-                mode={budgetMode}
-                remainingOverrides={budgetMode === "recording" ? incomeRemainingMap : undefined}
-                incomeEntries={budgetMode === "recording" ? active.income : undefined}
+          {active.type === "todo" ? (
+            <div className="max-w-lg">
+              <TodoList
+                entries={active.todos ?? []}
+                onChange={updateTodos}
                 readOnly={!!active.syncSource && !active.syncSource.canWrite}
               />
-              <BudgetTable
-                title="Money Out"
-                variant="expense"
-                entries={active.expenses}
-                onChange={(expenses, immediate) => {
-                  let ordered = expenses;
-                  if (immediate) {
-                    const toMove = expenses.filter((e) => {
-                      const prev = active.expenses.find((o) => o.id === e.id);
-                      if (!prev) return false;
-                      const prevSpent = (prev.transactions ?? []).reduce((s, t) => s + t.amount, 0);
-                      const newSpent = (e.transactions ?? []).reduce((s, t) => s + t.amount, 0);
-                      return prev.amount - prevSpent > 0 && e.amount - newSpent <= 0;
-                    });
-                    if (toMove.length > 0) {
-                      const movedIds = new Set(toMove.map((e) => e.id));
-                      ordered = [...expenses.filter((e) => !movedIds.has(e.id)), ...toMove];
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="space-y-6">
+                <BudgetTable
+                  title="Money In"
+                  variant="income"
+                  entries={active.income}
+                  onChange={(income, immediate) => updateActive({ income }, immediate)}
+                  totalLabel={budgetMode === "recording" ? "Remaining income" : "Total income"}
+                  total={displayTotalIncome}
+                  mode={budgetMode}
+                  remainingOverrides={budgetMode === "recording" ? incomeRemainingMap : undefined}
+                  incomeEntries={budgetMode === "recording" ? active.income : undefined}
+                  readOnly={!!active.syncSource && !active.syncSource.canWrite}
+                />
+                <BudgetTable
+                  title="Money Out"
+                  variant="expense"
+                  entries={active.expenses}
+                  onChange={(expenses, immediate) => {
+                    let ordered = expenses;
+                    if (immediate) {
+                      const toMove = expenses.filter((e) => {
+                        const prev = active.expenses.find((o) => o.id === e.id);
+                        if (!prev) return false;
+                        const prevSpent = (prev.transactions ?? []).reduce((s, t) => s + t.amount, 0);
+                        const newSpent = (e.transactions ?? []).reduce((s, t) => s + t.amount, 0);
+                        return prev.amount - prevSpent > 0 && e.amount - newSpent <= 0;
+                      });
+                      if (toMove.length > 0) {
+                        const movedIds = new Set(toMove.map((e) => e.id));
+                        ordered = [...expenses.filter((e) => !movedIds.has(e.id)), ...toMove];
+                      }
                     }
-                  }
-                  updateActive({ expenses: ordered }, immediate);
-                }}
-                totalLabel={budgetMode === "recording" ? "Remaining budget" : "Total expenses"}
-                total={displayTotalExpenses}
-                mode={budgetMode}
-                incomeEntries={budgetMode === "recording" ? active.income.filter((e) => e.label.trim() !== "") : undefined}
-                incomeRemaining={budgetMode === "recording" ? incomeRemainingMap : undefined}
-                readOnly={!!active.syncSource && !active.syncSource.canWrite}
-              />
+                    updateActive({ expenses: ordered }, immediate);
+                  }}
+                  totalLabel={budgetMode === "recording" ? "Remaining budget" : "Total expenses"}
+                  total={displayTotalExpenses}
+                  mode={budgetMode}
+                  incomeEntries={budgetMode === "recording" ? active.income.filter((e) => e.label.trim() !== "") : undefined}
+                  incomeRemaining={budgetMode === "recording" ? incomeRemainingMap : undefined}
+                  readOnly={!!active.syncSource && !active.syncSource.canWrite}
+                />
+              </div>
+
+              <div className="space-y-6">
+                <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
+                  <div className="bg-leftover text-leftover-foreground px-4 py-2.5 text-sm font-semibold tracking-wide uppercase">
+                    Money Left Over
+                  </div>
+                  <div className="flex items-center justify-between px-4 py-3">
+                    <span className="text-sm font-medium">
+                      {budgetMode === "recording" ? "Remaining income vs remaining budget" : "Income minus expenses"}
+                    </span>
+                    <span
+                      className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}
+                    >
+                      {fmt(leftover)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
+                  <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground text-center mb-4">
+                    Income / Expenses
+                  </h2>
+                  <div className="h-72">
+                    {chartData.length > 0 ? (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <PieChart>
+                          <Pie
+                            data={chartData}
+                            dataKey="value"
+                            nameKey="name"
+                            cx="50%"
+                            cy="50%"
+                            outerRadius={100}
+                            label={({ value }: { value: number }) => fmt(value)}
+                            labelLine={false}
+                          >
+                            {chartData.map((entry, i) => (
+                              <Cell key={i} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: "var(--popover)",
+                              border: "1px solid var(--border)",
+                              borderRadius: "0.5rem",
+                              fontSize: "0.875rem",
+                            }}
+                            formatter={(v: number) => fmt(v)}
+                          />
+                          <Legend iconType="circle" wrapperStyle={{ fontSize: "0.75rem" }} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    ) : (
+                      <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
+                        Add income or expenses to see the chart.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <Stat label={budgetMode === "recording" ? "Rem. income" : "Income"} value={displayTotalIncome} colorVar="--income" />
+                    <Stat label={budgetMode === "recording" ? "Rem. budget" : "Expenses"} value={displayTotalExpenses} colorVar="--expense" />
+                    <Stat label="Left over" value={leftover} colorVar="--leftover" />
+                  </div>
+                </div>
+              </div>
             </div>
-
-            <div className="space-y-6">
-              <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
-                <div className="bg-leftover text-leftover-foreground px-4 py-2.5 text-sm font-semibold tracking-wide uppercase">
-                  Money Left Over
-                </div>
-                <div className="flex items-center justify-between px-4 py-3">
-                  <span className="text-sm font-medium">
-                    {budgetMode === "recording" ? "Remaining income vs remaining budget" : "Income minus expenses"}
-                  </span>
-                  <span
-                    className={`text-lg font-semibold tabular-nums ${leftover < 0 ? "text-destructive" : "text-foreground"}`}
-                  >
-                    {fmt(leftover)}
-                  </span>
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
-                <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground text-center mb-4">
-                  Income / Expenses
-                </h2>
-                <div className="h-72">
-                  {chartData.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={chartData}
-                          dataKey="value"
-                          nameKey="name"
-                          cx="50%"
-                          cy="50%"
-                          outerRadius={100}
-                          label={({ value }: { value: number }) => fmt(value)}
-                          labelLine={false}
-                        >
-                          {chartData.map((entry, i) => (
-                            <Cell key={i} fill={entry.color} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          contentStyle={{
-                            backgroundColor: "var(--popover)",
-                            border: "1px solid var(--border)",
-                            borderRadius: "0.5rem",
-                            fontSize: "0.875rem",
-                          }}
-                          formatter={(v: number) => fmt(v)}
-                        />
-                        <Legend iconType="circle" wrapperStyle={{ fontSize: "0.75rem" }} />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-                      Add income or expenses to see the chart.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className="rounded-lg border border-border bg-card p-5 shadow-sm">
-                <div className="grid grid-cols-3 gap-4 text-center">
-                  <Stat label={budgetMode === "recording" ? "Rem. income" : "Income"} value={displayTotalIncome} colorVar="--income" />
-                  <Stat label={budgetMode === "recording" ? "Rem. budget" : "Expenses"} value={displayTotalExpenses} colorVar="--expense" />
-                  <Stat label="Left over" value={leftover} colorVar="--leftover" />
-                </div>
-              </div>
-            </div>
-          </div>
+          )}
 
           <footer className="mt-10 text-center text-xs text-muted-foreground">
             Saved locally · Synced online when connected · Share budgets via read-only or editable links
@@ -2058,7 +2136,10 @@ function BudgetApp() {
                     className="flex items-center gap-3 border border-border rounded-md px-3 py-2"
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate">{b.title || "Untitled"}</div>
+                      <div className="flex items-center gap-1.5 text-sm font-medium truncate">
+                        {b.type === "todo" && <ListTodo className="size-3 shrink-0 text-muted-foreground/60" />}
+                        {b.title || "Untitled"}
+                      </div>
                       <div className="text-xs text-muted-foreground truncate">
                         {b.subtitle || "—"}
                         {b.archivedAt
