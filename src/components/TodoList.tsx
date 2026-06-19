@@ -246,17 +246,17 @@ export function TodoList({ entries, onChange, readOnly }: Props) {
                     </div>
 
                     {!readOnly ? (
-                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      <div className="flex items-center gap-0.5 shrink-0">
                         <button
                           onClick={() => addChild(entry.id)}
-                          className="p-1 rounded text-foreground/50 hover:text-foreground hover:bg-muted transition-colors"
+                          className="p-1 rounded text-foreground/30 hover:text-foreground hover:bg-muted transition-colors"
                           title="Add sub-item"
                         >
                           <Plus className="size-3.5" />
                         </button>
                         <button
                           onClick={() => setPendingDelete(entry.id)}
-                          className="p-1 rounded text-foreground/40 hover:text-destructive transition-colors"
+                          className="p-1 rounded text-foreground/30 hover:text-destructive transition-colors"
                           title="Remove item"
                         >
                           <Trash2 className="size-3.5" />
@@ -302,7 +302,7 @@ export function TodoList({ entries, onChange, readOnly }: Props) {
                     {!readOnly && (
                       <button
                         onClick={() => deleteChild(entry.id, child.id)}
-                        className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-foreground/40 hover:text-destructive transition-all shrink-0"
+                        className="p-0.5 rounded text-foreground/30 hover:text-destructive transition-colors shrink-0"
                         title="Remove sub-item"
                       >
                         <X className="size-3" />
