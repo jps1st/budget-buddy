@@ -58,6 +58,47 @@ function handleDeleteReceipt(filename: string): Response {
   return json({ ok: true });
 }
 
+// GET /api/admin/all — dump every budget/workspace across all devices (audit/recovery)
+function handleAdminAll(): Response {
+  const budgets = db
+    .prepare(
+      "SELECT id, owner_device_id, data, updated_at, ro_token, rw_token FROM budgets ORDER BY updated_at DESC",
+    )
+    .all() as DbBudget[];
+  const workspaces = db
+    .prepare(
+      "SELECT id, owner_device_id, name, updated_at, ro_token, rw_token FROM workspaces ORDER BY updated_at DESC",
+    )
+    .all() as DbWorkspace[];
+  const workspaceBudgets = db
+    .prepare("SELECT workspace_id, budget_id, position FROM workspace_budgets ORDER BY position ASC")
+    .all() as { workspace_id: string; budget_id: string; position: number }[];
+
+  return json({
+    budgets: budgets.map((b) => ({
+      id: b.id,
+      ownerDeviceId: b.owner_device_id,
+      data: b.data,
+      updatedAt: b.updated_at,
+      hasRoToken: !!b.ro_token,
+      hasRwToken: !!b.rw_token,
+    })),
+    workspaces: workspaces.map((w) => ({
+      id: w.id,
+      ownerDeviceId: w.owner_device_id,
+      name: w.name,
+      updatedAt: w.updated_at,
+      hasRoToken: !!w.ro_token,
+      hasRwToken: !!w.rw_token,
+    })),
+    workspaceBudgets: workspaceBudgets.map((wb) => ({
+      workspaceId: wb.workspace_id,
+      budgetId: wb.budget_id,
+      position: wb.position,
+    })),
+  });
+}
+
 function handleCleanupExpired(): Response {
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const rows = db.prepare("SELECT id, data FROM budgets").all() as { id: string; data: string }[];
@@ -784,6 +825,9 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
 
   // Maintenance (no auth required — only affects data past its retention period)
   if (path === "/api/maintenance/cleanup-expired" && method === "POST") return handleCleanupExpired();
+
+  // Admin audit/recovery dump (no auth — unprotected per explicit request; see /all)
+  if (path === "/api/admin/all" && method === "GET") return handleAdminAll();
 
   // Token endpoints don't require device ID
   const tokenMatch = path.match(/^\/api\/t\/([A-Za-z0-9]{32})$/);

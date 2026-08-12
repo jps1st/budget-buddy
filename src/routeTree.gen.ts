@@ -9,10 +9,16 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as AllRouteImport } from './routes/all'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ShareTokenRouteImport } from './routes/share.$token'
 import { Route as ShareWTokenRouteImport } from './routes/share.w.$token'
 
+const AllRoute = AllRouteImport.update({
+  id: '/all',
+  path: '/all',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -31,36 +37,47 @@ const ShareWTokenRoute = ShareWTokenRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/all': typeof AllRoute
   '/share/$token': typeof ShareTokenRoute
   '/share/w/$token': typeof ShareWTokenRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/all': typeof AllRoute
   '/share/$token': typeof ShareTokenRoute
   '/share/w/$token': typeof ShareWTokenRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/all': typeof AllRoute
   '/share/$token': typeof ShareTokenRoute
   '/share/w/$token': typeof ShareWTokenRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/share/$token' | '/share/w/$token'
+  fullPaths: '/' | '/all' | '/share/$token' | '/share/w/$token'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/share/$token' | '/share/w/$token'
-  id: '__root__' | '/' | '/share/$token' | '/share/w/$token'
+  to: '/' | '/all' | '/share/$token' | '/share/w/$token'
+  id: '__root__' | '/' | '/all' | '/share/$token' | '/share/w/$token'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AllRoute: typeof AllRoute
   ShareTokenRoute: typeof ShareTokenRoute
   ShareWTokenRoute: typeof ShareWTokenRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/all': {
+      id: '/all'
+      path: '/all'
+      fullPath: '/all'
+      preLoaderRoute: typeof AllRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -87,6 +104,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AllRoute: AllRoute,
   ShareTokenRoute: ShareTokenRoute,
   ShareWTokenRoute: ShareWTokenRoute,
 }
