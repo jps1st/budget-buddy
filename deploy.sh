@@ -27,15 +27,15 @@ npm run build
 
 # 4. Upload dist/ to a staging directory on the server (live dist/ untouched during transfer)
 echo "==> Uploading dist/ to server..."
-rsync -az --delete dist/ node10:~/budget-buddy/dist.next/
+rsync -az --delete dist/ sin:~/node10/budget-buddy/dist.next/
 
 # 5. Atomic-ish swap + graceful PM2 reload (no npm/git on server)
 echo "==> Swapping dist and reloading PM2..."
-ssh node10 '
+ssh sin '
   set -euo pipefail
   export NVM_DIR="$HOME/.nvm"
   [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
-  cd ~/budget-buddy
+  cd ~/node10/budget-buddy
   rm -rf dist.old
   [ -d dist ] && mv dist dist.old
   mv dist.next dist
