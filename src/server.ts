@@ -99,6 +99,29 @@ function handleAdminAll(): Response {
   });
 }
 
+// POST /api/admin/budgets/:id/token — get-or-create a share token for any budget, regardless of
+// owner, so it can be opened for editing from the /all audit view (audit/recovery bypass)
+function handleAdminGetBudgetToken(id: string): Response {
+  const budget = db
+    .prepare("SELECT id, ro_token, rw_token FROM budgets WHERE id = ?")
+    .get(id) as DbBudget | undefined;
+  if (!budget) return json({ error: "Budget not found" }, 404);
+
+  let roToken = budget.ro_token;
+  let rwToken = budget.rw_token;
+
+  if (!roToken) {
+    roToken = generateToken();
+    db.prepare("UPDATE budgets SET ro_token = ? WHERE id = ?").run(roToken, id);
+  }
+  if (!rwToken) {
+    rwToken = generateToken();
+    db.prepare("UPDATE budgets SET rw_token = ? WHERE id = ?").run(rwToken, id);
+  }
+
+  return json({ roToken, rwToken });
+}
+
 function handleCleanupExpired(): Response {
   const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const rows = db.prepare("SELECT id, data FROM budgets").all() as { id: string; data: string }[];
@@ -828,6 +851,8 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
 
   // Admin audit/recovery dump (no auth — unprotected per explicit request; see /all)
   if (path === "/api/admin/all" && method === "GET") return handleAdminAll();
+  const adminBudgetTokenMatch = path.match(/^\/api\/admin\/budgets\/([^/]+)\/token$/);
+  if (adminBudgetTokenMatch && method === "POST") return handleAdminGetBudgetToken(adminBudgetTokenMatch[1]);
 
   // Token endpoints don't require device ID
   const tokenMatch = path.match(/^\/api\/t\/([A-Za-z0-9]{32})$/);

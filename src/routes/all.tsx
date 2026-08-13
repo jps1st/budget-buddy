@@ -271,6 +271,22 @@ function BudgetDetail({ budget, onBack }: { budget: AdminBudget; onBack: () => v
   const income = Array.isArray(parsed.income) ? parsed.income : [];
   const expenses = Array.isArray(parsed.expenses) ? parsed.expenses : [];
   const [showRaw, setShowRaw] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  async function handleEdit() {
+    setEditing(true);
+    setEditError(null);
+    try {
+      const res = await fetch(`/api/admin/budgets/${budget.id}/token`, { method: "POST" });
+      if (!res.ok) throw new Error();
+      const { rwToken } = (await res.json()) as { rwToken: string };
+      window.location.href = `/share/${rwToken}`;
+    } catch {
+      setEditError("Failed to open budget for editing.");
+      setEditing(false);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background px-4 py-8">
@@ -282,8 +298,18 @@ function BudgetDetail({ budget, onBack }: { budget: AdminBudget; onBack: () => v
           <ArrowLeft className="size-3.5" /> Back
         </button>
 
-        <h1 className="text-xl font-semibold text-foreground mb-1">{parsed.title || "Untitled"}</h1>
+        <div className="flex items-start justify-between gap-4 mb-1">
+          <h1 className="text-xl font-semibold text-foreground">{parsed.title || "Untitled"}</h1>
+          <button
+            onClick={() => void handleEdit()}
+            disabled={editing}
+            className="shrink-0 inline-flex items-center gap-1.5 rounded-md border border-input px-3 py-1.5 text-xs hover:bg-accent disabled:opacity-50"
+          >
+            {editing ? "Opening…" : "Edit this budget"}
+          </button>
+        </div>
         {parsed.subtitle && <p className="text-sm text-muted-foreground mb-1">{parsed.subtitle}</p>}
+        {editError && <p className="text-xs text-destructive mb-1">{editError}</p>}
         <p className="text-xs text-muted-foreground mb-6">
           id: {budget.id} · owner: {budget.ownerDeviceId} · updated {fmtDate(budget.updatedAt)}
           {parsed.archived && " · archived"}
