@@ -83,6 +83,7 @@ import {
   type WorkspaceLinks,
 } from "@/lib/sync-api";
 import { fmt } from "@/lib/utils";
+import { openReconnectingSocket, type ReconnectingSocket } from "@/lib/reconnecting-socket";
 
 function uuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -457,7 +458,7 @@ function BudgetApp() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // SSE: open one EventSource per shared budget AND per owned budget with an active share link.
+  // WebSocket: open one connection per shared budget AND per owned budget with an active share link.
   // Keyed on a stable string so connections survive data-only state updates.
   const sharedTokensKey = useMemo(
     () =>
@@ -480,7 +481,7 @@ function BudgetApp() {
     const ownedShared = current.filter((b) => !b.syncSource && !!b.roToken);
     if (sharedBudgets.length === 0 && ownedShared.length === 0) return;
 
-    const sources: EventSource[] = [];
+    const sockets: ReconnectingSocket[] = [];
 
     function applyParsed(
       cur: BudgetRow,
@@ -507,96 +508,96 @@ function BudgetApp() {
     for (const b of sharedBudgets) {
       const token = b.syncSource!.token;
       const budgetId = b.id;
-      const es = new EventSource(`/api/watch/${token}`);
 
-      es.onopen = () => {
-        void fetchByToken(token).then((remote) => {
-          if (!remote) return;
+      const socket = openReconnectingSocket(`/api/watch/${token}`, {
+        onOpen: () => {
+          void fetchByToken(token).then((remote) => {
+            if (!remote) return;
+            const cur = budgetsRef.current.find((x) => x.id === budgetId);
+            if (!cur?.syncSource) return;
+            if (!cur) return;
+            setBudgets((arr) => {
+              const latest = arr.find((x) => x.id === budgetId);
+              if (!latest?.syncSource) return arr;
+              const patch = applyParsed(latest, remote.data, remote.updatedAt);
+              if (!patch) return arr;
+              const updated: BudgetRow = {
+                ...latest, ...patch,
+                syncSource: { token, canWrite: remote.canWrite },
+              };
+              void putBudget(updated);
+              return arr.map((x) => (x.id === budgetId ? updated : x));
+            });
+          });
+        },
+        onMessage: (data) => {
+          const payload = JSON.parse(data) as { data: string; updatedAt: number };
           const cur = budgetsRef.current.find((x) => x.id === budgetId);
           if (!cur?.syncSource) return;
           if (!cur) return;
           setBudgets((arr) => {
             const latest = arr.find((x) => x.id === budgetId);
             if (!latest?.syncSource) return arr;
-            const patch = applyParsed(latest, remote.data, remote.updatedAt);
+            const patch = applyParsed(latest, payload.data, payload.updatedAt);
             if (!patch) return arr;
-            const updated: BudgetRow = {
-              ...latest, ...patch,
-              syncSource: { token, canWrite: remote.canWrite },
-            };
+            const updated: BudgetRow = { ...latest, ...patch, syncSource: latest.syncSource };
             void putBudget(updated);
             return arr.map((x) => (x.id === budgetId ? updated : x));
           });
-        });
-      };
+        },
+      });
 
-      es.onmessage = (event) => {
-        const payload = JSON.parse(event.data as string) as { data: string; updatedAt: number };
-        const cur = budgetsRef.current.find((x) => x.id === budgetId);
-        if (!cur?.syncSource) return;
-        if (!cur) return;
-        setBudgets((arr) => {
-          const latest = arr.find((x) => x.id === budgetId);
-          if (!latest?.syncSource) return arr;
-          const patch = applyParsed(latest, payload.data, payload.updatedAt);
-          if (!patch) return arr;
-          const updated: BudgetRow = { ...latest, ...patch, syncSource: latest.syncSource };
-          void putBudget(updated);
-          return arr.map((x) => (x.id === budgetId ? updated : x));
-        });
-      };
-
-      sources.push(es);
+      sockets.push(socket);
     }
 
     // ── Owned budgets with active share links (owner sees editor edits live) ─
     for (const b of ownedShared) {
       const token = b.roToken!;
       const budgetId = b.id;
-      const es = new EventSource(`/api/watch/${token}`);
 
-      es.onopen = () => {
-        void fetchByToken(token).then((remote) => {
-          if (!remote) return;
+      const socket = openReconnectingSocket(`/api/watch/${token}`, {
+        onOpen: () => {
+          void fetchByToken(token).then((remote) => {
+            if (!remote) return;
+            const cur = budgetsRef.current.find((x) => x.id === budgetId);
+            if (!cur || cur.syncSource) return;
+            if (!cur) return;
+            setBudgets((arr) => {
+              const latest = arr.find((x) => x.id === budgetId);
+              if (!latest || latest.syncSource) return arr;
+              const patch = applyParsed(latest, remote.data, remote.updatedAt);
+              if (!patch) return arr;
+              const updated: BudgetRow = { ...latest, ...patch };
+              void putBudget(updated);
+              return arr.map((x) => (x.id === budgetId ? updated : x));
+            });
+          });
+        },
+        onMessage: (data) => {
+          const payload = JSON.parse(data) as { data: string; updatedAt: number };
           const cur = budgetsRef.current.find((x) => x.id === budgetId);
           if (!cur || cur.syncSource) return;
           if (!cur) return;
           setBudgets((arr) => {
             const latest = arr.find((x) => x.id === budgetId);
             if (!latest || latest.syncSource) return arr;
-            const patch = applyParsed(latest, remote.data, remote.updatedAt);
+            const patch = applyParsed(latest, payload.data, payload.updatedAt);
             if (!patch) return arr;
             const updated: BudgetRow = { ...latest, ...patch };
             void putBudget(updated);
             return arr.map((x) => (x.id === budgetId ? updated : x));
           });
-        });
-      };
+        },
+      });
 
-      es.onmessage = (event) => {
-        const payload = JSON.parse(event.data as string) as { data: string; updatedAt: number };
-        const cur = budgetsRef.current.find((x) => x.id === budgetId);
-        if (!cur || cur.syncSource) return;
-        if (!cur) return;
-        setBudgets((arr) => {
-          const latest = arr.find((x) => x.id === budgetId);
-          if (!latest || latest.syncSource) return arr;
-          const patch = applyParsed(latest, payload.data, payload.updatedAt);
-          if (!patch) return arr;
-          const updated: BudgetRow = { ...latest, ...patch };
-          void putBudget(updated);
-          return arr.map((x) => (x.id === budgetId ? updated : x));
-        });
-      };
-
-      sources.push(es);
+      sockets.push(socket);
     }
 
-    return () => { for (const es of sources) es.close(); };
+    return () => { for (const s of sockets) s.close(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedTokensKey]);
 
-  // ── Workspace SSE: subscribe to structure + budget-data events ─────────────
+  // ── Workspace WebSocket: subscribe to structure + budget-data events ───────
   const wsTokensKey = useMemo(
     () =>
       workspaces
@@ -611,7 +612,7 @@ function BudgetApp() {
     const watchedWs = workspaces.filter((w) => !!w.syncSource || !!w.roToken);
     if (watchedWs.length === 0) return;
 
-    const sources: EventSource[] = [];
+    const sockets: ReconnectingSocket[] = [];
 
     for (const ws of watchedWs) {
       const isOwned = !ws.syncSource && !!ws.roToken;
@@ -619,10 +620,8 @@ function BudgetApp() {
       const canWrite = isOwned ? true : ws.syncSource!.canWrite;
       const wsId = ws.id;
 
-      const es = new EventSource(`/api/wwatch/${token}`);
-
       let firstOpen = true;
-      es.onopen = () => {
+      const onOpen = () => {
         if (firstOpen) { firstOpen = false; return; }
         // Reconnected after a drop — catch up on missed events
         void fetchWorkspaceByToken(token).then((result) => {
@@ -658,11 +657,11 @@ function BudgetApp() {
         });
       };
 
-      es.onmessage = (event) => {
+      const onMessage = (data: string) => {
         type WsPayload =
           | { type: "structure"; serverBudgetIds: string[] }
           | { type: "budget"; budgetId: string; data: string; updatedAt: number };
-        const payload = JSON.parse(event.data as string) as WsPayload;
+        const payload = JSON.parse(data) as WsPayload;
 
         if (payload.type === "structure") {
           if (isOwned) {
@@ -830,10 +829,11 @@ function BudgetApp() {
         }
       };
 
-      sources.push(es);
+      const socket = openReconnectingSocket(`/api/wwatch/${token}`, { onOpen, onMessage });
+      sockets.push(socket);
     }
 
-    return () => { for (const es of sources) es.close(); };
+    return () => { for (const s of sockets) s.close(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wsTokensKey]);
 
@@ -1312,7 +1312,7 @@ function BudgetApp() {
     const links = await getShareLinks(budgetId, deviceId);
     setShareLinks(links);
     if (links) {
-      // Persist roToken so the SSE effect can subscribe the owner to editor updates
+      // Persist roToken so the WebSocket effect can subscribe the owner to editor updates
       setBudgets((arr) =>
         arr.map((b) => {
           if (b.id !== budgetId || b.syncSource || b.roToken === links.roToken) return b;

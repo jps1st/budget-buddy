@@ -3,8 +3,11 @@ import "./lib/error-capture";
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { join, extname } from "node:path";
+import type { IncomingMessage } from "node:http";
+import type { Duplex } from "node:stream";
 import { serve } from "srvx/node";
 import { serveStatic } from "srvx/static";
+import { WebSocketServer, WebSocket } from "ws";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 
@@ -204,57 +207,70 @@ for (const [col, idx] of [
 
 process.on("exit", () => db.close());
 
-// ─── SSE registry ─────────────────────────────────────────────────────────────
+// ─── WebSocket registry ───────────────────────────────────────────────────────
 
-const enc = new TextEncoder();
+const HEARTBEAT_MS = 25_000;
 
-type SseController = ReadableStreamDefaultController<Uint8Array>;
 // budgetId → connected watchers
-const sseClients = new Map<string, Set<SseController>>();
+const budgetSockets = new Map<string, Set<WebSocket>>();
 
 function notifyWatchers(budgetId: string, data: string, updatedAt: number) {
-  const clients = sseClients.get(budgetId);
+  const clients = budgetSockets.get(budgetId);
   if (!clients?.size) return;
-  const chunk = enc.encode(`data: ${JSON.stringify({ data, updatedAt })}\n\n`);
-  for (const ctrl of clients) {
-    try { ctrl.enqueue(chunk); } catch { clients.delete(ctrl); }
+  const payload = JSON.stringify({ data, updatedAt });
+  for (const socket of clients) {
+    if (socket.readyState === WebSocket.OPEN) socket.send(payload);
   }
 }
 
-function registerWatcher(budgetId: string, ctrl: SseController) {
-  if (!sseClients.has(budgetId)) sseClients.set(budgetId, new Set());
-  sseClients.get(budgetId)!.add(ctrl);
+function registerWatcher(budgetId: string, socket: WebSocket) {
+  if (!budgetSockets.has(budgetId)) budgetSockets.set(budgetId, new Set());
+  budgetSockets.get(budgetId)!.add(socket);
 }
 
-function unregisterWatcher(budgetId: string, ctrl: SseController) {
-  const set = sseClients.get(budgetId);
+function unregisterWatcher(budgetId: string, socket: WebSocket) {
+  const set = budgetSockets.get(budgetId);
   if (!set) return;
-  set.delete(ctrl);
-  if (set.size === 0) sseClients.delete(budgetId);
+  set.delete(socket);
+  if (set.size === 0) budgetSockets.delete(budgetId);
 }
 
 // workspaceId → connected workspace-level watchers
-const wsSseClients = new Map<string, Set<SseController>>();
+const workspaceSockets = new Map<string, Set<WebSocket>>();
 
 function notifyWsClients(workspaceId: string, payload: object) {
-  const clients = wsSseClients.get(workspaceId);
+  const clients = workspaceSockets.get(workspaceId);
   if (!clients?.size) return;
-  const chunk = enc.encode(`data: ${JSON.stringify(payload)}\n\n`);
-  for (const ctrl of clients) {
-    try { ctrl.enqueue(chunk); } catch { clients.delete(ctrl); }
+  const message = JSON.stringify(payload);
+  for (const socket of clients) {
+    if (socket.readyState === WebSocket.OPEN) socket.send(message);
   }
 }
 
-function registerWsWatcher(workspaceId: string, ctrl: SseController) {
-  if (!wsSseClients.has(workspaceId)) wsSseClients.set(workspaceId, new Set());
-  wsSseClients.get(workspaceId)!.add(ctrl);
+function registerWsWatcher(workspaceId: string, socket: WebSocket) {
+  if (!workspaceSockets.has(workspaceId)) workspaceSockets.set(workspaceId, new Set());
+  workspaceSockets.get(workspaceId)!.add(socket);
 }
 
-function unregisterWsWatcher(workspaceId: string, ctrl: SseController) {
-  const set = wsSseClients.get(workspaceId);
+function unregisterWsWatcher(workspaceId: string, socket: WebSocket) {
+  const set = workspaceSockets.get(workspaceId);
   if (!set) return;
-  set.delete(ctrl);
-  if (set.size === 0) wsSseClients.delete(workspaceId);
+  set.delete(socket);
+  if (set.size === 0) workspaceSockets.delete(workspaceId);
+}
+
+// Attach ping/pong liveness checks so dead connections (network drop without a clean
+// close) are detected and cleaned up instead of lingering in the registries forever.
+function attachHeartbeat(socket: WebSocket) {
+  let isAlive = true;
+  socket.on("pong", () => { isAlive = true; });
+  const heartbeat = setInterval(() => {
+    if (!isAlive) { socket.terminate(); return; }
+    isAlive = false;
+    socket.ping();
+  }, HEARTBEAT_MS);
+  socket.on("close", () => clearInterval(heartbeat));
+  socket.on("error", () => { /* 'close' follows and handles cleanup */ });
 }
 
 // Notify workspace SSE clients when a budget's data changes
@@ -536,45 +552,6 @@ async function handlePutByToken(token: string, request: Request): Promise<Respon
   return json({ ok: true });
 }
 
-// GET /api/watch/:token — SSE stream; pushes events whenever the budget is updated
-function handleWatch(token: string): Response {
-  const budget = db
-    .prepare("SELECT id FROM budgets WHERE ro_token = ? OR rw_token = ?")
-    .get(token, token) as { id: string } | undefined;
-
-  if (!budget) return json({ error: "Not found" }, 404);
-
-  const budgetId = budget.id;
-  let ctrl: SseController;
-  let heartbeat: ReturnType<typeof setInterval>;
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      ctrl = controller;
-      registerWatcher(budgetId, ctrl);
-      // Send an initial ping so the client knows the connection is live
-      controller.enqueue(enc.encode(": connected\n\n"));
-      // Keepalive comment every 25 s — prevents proxies from closing idle connections
-      heartbeat = setInterval(() => {
-        try { controller.enqueue(enc.encode(": ping\n\n")); } catch { clearInterval(heartbeat); }
-      }, 25_000);
-    },
-    cancel() {
-      clearInterval(heartbeat);
-      unregisterWatcher(budgetId, ctrl);
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-      "X-Accel-Buffering": "no",
-    },
-  });
-}
-
 // POST /api/workspaces
 async function handleCreateWorkspace(deviceId: string, request: Request): Promise<Response> {
   let body: { name: string };
@@ -805,39 +782,10 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
   const path = url.pathname;
   const method = request.method;
 
-  // GET /api/wwatch/:token — SSE for workspace structure + budget data changes
-  const wwatchMatch = path.match(/^\/api\/wwatch\/([A-Za-z0-9]{32})$/);
-  if (wwatchMatch && method === "GET") {
-    const token = wwatchMatch[1];
-    const ws = db
-      .prepare("SELECT id FROM workspaces WHERE ro_token = ? OR rw_token = ?")
-      .get(token, token) as { id: string } | undefined;
-    if (!ws) return json({ error: "Not found" }, 404);
-    const workspaceId = ws.id;
-    let ctrl: SseController;
-    let heartbeat: ReturnType<typeof setInterval>;
-    const stream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        ctrl = controller;
-        registerWsWatcher(workspaceId, ctrl);
-        controller.enqueue(enc.encode(": connected\n\n"));
-        heartbeat = setInterval(() => {
-          try { controller.enqueue(enc.encode(": ping\n\n")); } catch { clearInterval(heartbeat); }
-        }, 25_000);
-      },
-      cancel() {
-        clearInterval(heartbeat);
-        unregisterWsWatcher(workspaceId, ctrl);
-      },
-    });
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "X-Accel-Buffering": "no",
-      },
-    });
+  // /api/watch/:token and /api/wwatch/:token are WebSocket-only (see handleWsUpgrade
+  // below) — a plain HTTP GET here means the client never upgraded.
+  if (/^\/api\/w?watch\/([A-Za-z0-9]{32})$/.test(path)) {
+    return json({ error: "Upgrade to WebSocket required" }, 426);
   }
 
   // Receipt endpoints (no auth required)
@@ -860,9 +808,6 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
     if (method === "GET") return handleGetByToken(tokenMatch[1]);
     if (method === "PUT") return handlePutByToken(tokenMatch[1], request);
   }
-
-  const watchMatch = path.match(/^\/api\/watch\/([A-Za-z0-9]{32})$/);
-  if (watchMatch && method === "GET") return handleWatch(watchMatch[1]);
 
   // Workspace public endpoints (no auth required)
   const wsTokenMatch = path.match(/^\/api\/w\/([A-Za-z0-9]{32})$/);
@@ -930,15 +875,58 @@ async function fetchHandler(request: Request): Promise<Response> {
   }
 }
 
+// ─── WebSocket upgrade router ──────────────────────────────────────────────────
+// /api/watch/:token and /api/wwatch/:token live outside the fetch-based API router
+// above because a WebSocket handshake is a raw HTTP upgrade, not a normal request/response.
+
+const wss = new WebSocketServer({ noServer: true });
+
+function handleWsUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
+  const path = new URL(req.url ?? "/", "http://internal").pathname;
+
+  const budgetMatch = path.match(/^\/api\/watch\/([A-Za-z0-9]{32})$/);
+  if (budgetMatch) {
+    const token = budgetMatch[1];
+    const budget = db
+      .prepare("SELECT id FROM budgets WHERE ro_token = ? OR rw_token = ?")
+      .get(token, token) as { id: string } | undefined;
+    if (!budget) { socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, (client) => {
+      registerWatcher(budget.id, client);
+      attachHeartbeat(client);
+      client.on("close", () => unregisterWatcher(budget.id, client));
+    });
+    return;
+  }
+
+  const workspaceMatch = path.match(/^\/api\/wwatch\/([A-Za-z0-9]{32})$/);
+  if (workspaceMatch) {
+    const token = workspaceMatch[1];
+    const workspace = db
+      .prepare("SELECT id FROM workspaces WHERE ro_token = ? OR rw_token = ?")
+      .get(token, token) as { id: string } | undefined;
+    if (!workspace) { socket.destroy(); return; }
+    wss.handleUpgrade(req, socket, head, (client) => {
+      registerWsWatcher(workspace.id, client);
+      attachHeartbeat(client);
+      client.on("close", () => unregisterWsWatcher(workspace.id, client));
+    });
+    return;
+  }
+
+  socket.destroy();
+}
+
 // ─── Server startup ───────────────────────────────────────────────────────────
 
 if (process.env.TSS_DEV_SERVER !== "true") {
-  serve({
+  const server = serve({
     fetch: fetchHandler,
     middleware: [serveStatic({ dir: "dist/client" })],
     port: parseInt(process.env.PORT ?? "4173"),
     hostname: process.env.HOST ?? "0.0.0.0",
   });
+  server.node?.server?.on("upgrade", handleWsUpgrade);
 }
 
 export default { fetch: fetchHandler };
