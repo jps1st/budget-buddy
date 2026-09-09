@@ -17,7 +17,9 @@ export type Transaction = {
   receiptUrl?: string;
 };
 
-export type Entry = { id: string; label: string; amount: number; transactions?: Transaction[] };
+export type SubItem = { id: string; label: string; amount: number };
+
+export type Entry = { id: string; label: string; amount: number; transactions?: Transaction[]; subItems?: SubItem[] };
 
 type Variant = "income" | "expense" | "leftover";
 
@@ -53,6 +55,7 @@ function formatTxDate(iso: string): string {
 }
 
 const emptyTx = () => ({ amount: "", fromId: "", date: todayISO(), description: "" });
+const emptySubItem = () => ({ label: "", amount: "" });
 
 export function BudgetTable({
   title, variant, entries, onChange, totalLabel, total,
@@ -63,6 +66,7 @@ export function BudgetTable({
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [addingTo, setAddingTo] = useState<string | null>(null);
   const [newTx, setNewTx] = useState<{ amount: string; fromId: string; date: string; description: string }>(emptyTx);
+  const [newSubItem, setNewSubItem] = useState<{ label: string; amount: string }>(emptySubItem);
   const [viewTx, setViewTx] = useState<{ tx: Transaction; fromLabel: string; rowLabel: string; isIncome?: boolean } | null>(null);
   const [overspendWarn, setOverspendWarn] = useState<{ entryId: string; message: string } | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -168,6 +172,30 @@ export function BudgetTable({
     updateEntry(entryId, { transactions: (entry.transactions ?? []).filter((t) => t.id !== txId) });
   };
 
+  const commitSubItem = (entryId: string) => {
+    const amt = parseFloat(newSubItem.amount);
+    if (!amt) return;
+
+    const item: SubItem = { id: crypto.randomUUID(), label: newSubItem.label.trim(), amount: amt };
+    const withItem = entries.map((e) => {
+      if (e.id !== entryId) return e;
+      const subItems = [...(e.subItems ?? []), item];
+      return { ...e, subItems, amount: subItems.reduce((s, si) => s + si.amount, 0) };
+    });
+    onChange(withItem, true);
+    setNewSubItem(emptySubItem());
+    setAddingTo(null);
+  };
+
+  const deleteSubItem = (entryId: string, subId: string) => {
+    const entry = entries.find((e) => e.id === entryId);
+    if (!entry) return;
+    const subItems = (entry.subItems ?? []).filter((si) => si.id !== subId);
+    const patch: Partial<Entry> = { subItems };
+    if (subItems.length > 0) patch.amount = subItems.reduce((s, si) => s + si.amount, 0);
+    updateEntry(entryId, patch);
+  };
+
   const isRecording = mode === "recording";
 
   return (
@@ -184,7 +212,10 @@ export function BudgetTable({
           const remaining  = entry.amount - spent;
           const displayRem = remainingOverrides?.[entry.id] ?? remaining;
           const txCount    = (entry.transactions ?? []).length;
-          const isExpanded = isRecording && variant !== "leftover" && expandedRows.has(entry.id);
+          const subItems   = entry.subItems ?? [];
+          const subCount   = subItems.length;
+          const canExpand  = variant !== "leftover";
+          const isExpanded = canExpand && expandedRows.has(entry.id);
           const isExhausted = isRecording && variant !== "leftover" && entry.amount > 0 && remaining <= 0;
 
           return (
@@ -199,7 +230,7 @@ export function BudgetTable({
                     ? "flex flex-col gap-2"
                     : isRecording
                       ? "grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2"
-                      : "grid grid-cols-[auto_1fr_auto_auto] items-center gap-2"
+                      : "grid grid-cols-[auto_auto_1fr_auto_auto_auto] items-center gap-2"
                 } ${isOver ? "border-t-2 border-primary bg-primary/5" : "hover:bg-muted/40"} ${
                   isDragging ? "opacity-40" : isExhausted ? "opacity-50" : ""
                 } ${isRecording && variant !== "leftover" ? "cursor-pointer" : ""}`}
@@ -285,16 +316,54 @@ export function BudgetTable({
                     ) : (
                       <span className="w-4 shrink-0" />
                     )}
-                    <input type="text" value={entry.label} readOnly={readOnly}
-                      onChange={(e) => updateEntry(entry.id, { label: e.target.value })}
-                      placeholder="Item"
-                      className="bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1 min-w-0"
-                    />
-                    <input type="number" value={entry.amount === 0 ? "" : entry.amount} readOnly={readOnly}
+                    {canExpand ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleRow(entry.id); }}
+                        className="flex items-center justify-center text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
+                        aria-label={isExpanded ? "Collapse sub-items" : "Expand sub-items"}
+                      >
+                        {isExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                      </button>
+                    ) : (
+                      <span className="w-3.5 shrink-0" />
+                    )}
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <input type="text" value={entry.label} readOnly={readOnly}
+                        onChange={(e) => updateEntry(entry.id, { label: e.target.value })}
+                        placeholder="Item"
+                        className="flex-1 min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                      />
+                      {subCount > 0 && !isExpanded && (
+                        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground shrink-0">
+                          {subCount}
+                        </span>
+                      )}
+                    </span>
+                    <input type="number" value={entry.amount === 0 ? "" : entry.amount}
+                      readOnly={readOnly || subCount > 0}
+                      title={subCount > 0 ? "Computed from sub-items" : undefined}
                       onChange={(e) => updateEntry(entry.id, { amount: parseFloat(e.target.value) || 0 })}
                       placeholder="0.00"
-                      className="bg-transparent text-sm text-right outline-none w-16 sm:w-24 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                      className={`bg-transparent text-sm text-right outline-none w-16 sm:w-24 tabular-nums placeholder:text-muted-foreground/60 rounded px-2 py-1 ${
+                        subCount > 0 ? "text-muted-foreground cursor-default" : "focus:bg-background"
+                      }`}
                     />
+                    {!readOnly && canExpand ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (!isExpanded) toggleRow(entry.id);
+                          setAddingTo(addingTo === entry.id ? null : entry.id);
+                          setNewSubItem(emptySubItem());
+                        }}
+                        className="p-1 rounded text-foreground/50 hover:text-foreground hover:bg-muted transition-colors shrink-0"
+                        aria-label="Add sub-item"
+                      >
+                        <Plus className="size-4" />
+                      </button>
+                    ) : (
+                      <span className="w-6 shrink-0" />
+                    )}
                     {!readOnly ? (
                       <button onClick={() => setPendingDelete(entry.id)}
                         className="text-foreground/40 hover:text-destructive p-1 transition-colors shrink-0"
@@ -309,7 +378,7 @@ export function BudgetTable({
               </div>
 
               {/* ── Transaction sub-rows (recording mode) ── */}
-              {isExpanded && (entry.transactions ?? []).map((tx) => {
+              {isRecording && isExpanded && (entry.transactions ?? []).map((tx) => {
                 const fromLabel = tx.fromIncomeId
                   ? (incomeEntries.find((e) => e.id === tx.fromIncomeId)?.label ?? "(deleted)")
                   : "";
@@ -351,7 +420,7 @@ export function BudgetTable({
               })}
 
               {/* ── Add transaction form ───────────────────────────────── */}
-              {isExpanded && addingTo === entry.id && (
+              {isRecording && isExpanded && addingTo === entry.id && (
                 <div className="flex flex-wrap items-center gap-2 px-4 py-2 bg-muted/20 border-t border-border">
                   <input
                     type="number" placeholder="Amount" min="0" step="0.01"
@@ -415,6 +484,52 @@ export function BudgetTable({
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* ── Sub-item rows (editing mode) ── */}
+              {!isRecording && isExpanded && subItems.map((si) => (
+                <div key={si.id}
+                  className="flex items-center gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground">
+                  <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                    <span className="font-medium text-foreground">{si.label || "Sub-item"}</span>
+                  </div>
+                  <span className="tabular-nums text-foreground font-medium">{fmt(si.amount)}</span>
+                  {!readOnly && (
+                    <button onClick={() => deleteSubItem(entry.id, si.id)}
+                      className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
+                      aria-label="Delete sub-item">
+                      <X className="size-3" />
+                    </button>
+                  )}
+                </div>
+              ))}
+
+              {/* ── Add sub-item form (editing mode) ───────────────────── */}
+              {!isRecording && isExpanded && addingTo === entry.id && (
+                <div className="flex flex-wrap items-center gap-2 px-4 py-2 bg-muted/20 border-t border-border">
+                  <input
+                    type="text" placeholder="Sub-item label"
+                    value={newSubItem.label}
+                    onChange={(e) => setNewSubItem((s) => ({ ...s, label: e.target.value }))}
+                    className="flex-1 min-w-[8rem] text-sm bg-background border border-input rounded px-2 py-1 outline-none focus:ring-1 focus:ring-ring"
+                    autoFocus
+                  />
+                  <input
+                    type="number" placeholder="Amount" min="0" step="0.01"
+                    value={newSubItem.amount}
+                    onChange={(e) => setNewSubItem((s) => ({ ...s, amount: e.target.value }))}
+                    className="w-24 text-sm bg-background border border-input rounded px-2 py-1 tabular-nums outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <button onClick={() => commitSubItem(entry.id)}
+                    disabled={!newSubItem.amount}
+                    className="text-xs px-3 py-1.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                    Add
+                  </button>
+                  <button onClick={() => setAddingTo(null)}
+                    className="text-xs px-2 py-1.5 rounded border border-border hover:bg-muted transition-colors">
+                    Cancel
+                  </button>
                 </div>
               )}
             </div>
