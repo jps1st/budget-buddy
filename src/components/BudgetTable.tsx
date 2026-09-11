@@ -43,6 +43,10 @@ const variantClasses: Record<Variant, string> = {
   leftover: "bg-leftover text-leftover-foreground",
 };
 
+function round2(n: number): number {
+  return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -180,7 +184,7 @@ export function BudgetTable({
     const withItem = entries.map((e) => {
       if (e.id !== entryId) return e;
       const subItems = [...(e.subItems ?? []), item];
-      return { ...e, subItems, amount: subItems.reduce((s, si) => s + si.amount, 0) };
+      return { ...e, subItems, amount: round2(subItems.reduce((s, si) => s + si.amount, 0)) };
     });
     onChange(withItem, true);
     setNewSubItem(emptySubItem());
@@ -192,7 +196,7 @@ export function BudgetTable({
     if (!entry) return;
     const subItems = (entry.subItems ?? []).filter((si) => si.id !== subId);
     const patch: Partial<Entry> = { subItems };
-    if (subItems.length > 0) patch.amount = subItems.reduce((s, si) => s + si.amount, 0);
+    if (subItems.length > 0) patch.amount = round2(subItems.reduce((s, si) => s + si.amount, 0));
     updateEntry(entryId, patch);
   };
 
