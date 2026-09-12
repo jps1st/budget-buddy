@@ -225,6 +225,8 @@ export function BudgetTable({
           const txCount    = (entry.transactions ?? []).length;
           const subItems   = entry.subItems ?? [];
           const subCount   = subItems.length;
+          const subTotal   = round2(subItems.reduce((s, si) => s + si.amount, 0));
+          const displayAmount = subCount > 0 ? subTotal : entry.amount;
           const canExpand  = variant !== "leftover";
           const isExpanded = canExpand && expandedRows.has(entry.id);
           const isExhausted = isRecording && variant !== "leftover" && entry.amount > 0 && remaining <= 0;
@@ -350,7 +352,7 @@ export function BudgetTable({
                         </span>
                       )}
                     </span>
-                    <input type="number" value={entry.amount === 0 ? "" : entry.amount}
+                    <input type="number" value={displayAmount === 0 ? "" : displayAmount}
                       readOnly={readOnly || subCount > 0}
                       title={subCount > 0 ? "Computed from sub-items" : undefined}
                       onChange={(e) => updateEntry(entry.id, { amount: parseFloat(e.target.value) || 0 })}
