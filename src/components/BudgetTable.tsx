@@ -200,6 +200,13 @@ export function BudgetTable({
     updateEntry(entryId, patch);
   };
 
+  const updateSubItem = (entryId: string, subId: string, patch: Partial<SubItem>) => {
+    const entry = entries.find((e) => e.id === entryId);
+    if (!entry) return;
+    const subItems = (entry.subItems ?? []).map((si) => (si.id === subId ? { ...si, ...patch } : si));
+    updateEntry(entryId, { subItems, amount: round2(subItems.reduce((s, si) => s + si.amount, 0)) });
+  };
+
   const isRecording = mode === "recording";
 
   return (
@@ -494,17 +501,25 @@ export function BudgetTable({
               {/* ── Sub-item rows (editing mode) ── */}
               {!isRecording && isExpanded && subItems.map((si) => (
                 <div key={si.id}
-                  className="flex items-center gap-2 px-4 py-1.5 bg-muted/30 text-xs text-muted-foreground">
-                  <div className="flex-1 min-w-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
-                    <span className="font-medium text-foreground">{si.label || "Sub-item"}</span>
-                  </div>
-                  <span className="tabular-nums text-foreground font-medium">{fmt(si.amount)}</span>
-                  {!readOnly && (
+                  className="flex items-center gap-2 px-4 py-1 bg-muted/30">
+                  <input type="text" value={si.label} readOnly={readOnly}
+                    onChange={(e) => updateSubItem(entry.id, si.id, { label: e.target.value })}
+                    placeholder="Sub-item"
+                    className="flex-1 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                  />
+                  <input type="number" value={si.amount === 0 ? "" : si.amount} readOnly={readOnly}
+                    onChange={(e) => updateSubItem(entry.id, si.id, { amount: parseFloat(e.target.value) || 0 })}
+                    placeholder="0.00"
+                    className="bg-transparent text-xs text-right outline-none w-16 sm:w-20 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                  />
+                  {!readOnly ? (
                     <button onClick={() => deleteSubItem(entry.id, si.id)}
                       className="text-muted-foreground hover:text-destructive transition-colors shrink-0"
                       aria-label="Delete sub-item">
                       <X className="size-3" />
                     </button>
+                  ) : (
+                    <span className="w-3 shrink-0" />
                   )}
                 </div>
               ))}
