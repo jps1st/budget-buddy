@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown, Paperclip, Camera, ImageIcon, FileText, Layers } from "lucide-react";
+import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown, Paperclip, Camera, ImageIcon, FileText } from "lucide-react";
 import { fmt } from "@/lib/utils";
 import {
   Dialog,
@@ -61,48 +61,6 @@ function formatTxDate(iso: string): string {
 const emptyTx = () => ({ amount: "", fromId: "", date: todayISO(), description: "" });
 const emptySubItem = () => ({ label: "", amount: "" });
 
-// A trailing "*group-name" tag on a label assigns the item to a summary group,
-// e.g. "Milk *cash" → name "Milk", group "cash".
-function parseGroupTag(label: string): { name: string; group: string | null } {
-  const m = label.match(/\*([^\s*]+)\s*$/);
-  if (!m) return { name: label.trim(), group: null };
-  const name = label.slice(0, m.index).trim();
-  return { name: name || label.trim(), group: m[1] };
-}
-
-type GroupItem = { id: string; label: string; amount: number };
-type Group = { key: string; name: string; items: GroupItem[]; total: number };
-
-// Items with sub-items already fold their sub-items' amounts into their own total, so only
-// the sub-items (not the parent) are considered here to avoid double-counting group sums.
-function buildGroups(entries: Entry[]): Group[] {
-  const map = new Map<string, Group>();
-
-  const addItem = (id: string, rawLabel: string, amount: number) => {
-    const { name, group } = parseGroupTag(rawLabel);
-    if (!group) return;
-    const key = group.toLowerCase();
-    let g = map.get(key);
-    if (!g) {
-      g = { key, name: group, items: [], total: 0 };
-      map.set(key, g);
-    }
-    g.items.push({ id, label: name || "Untitled", amount });
-    g.total = round2(g.total + amount);
-  };
-
-  for (const entry of entries) {
-    const subItems = entry.subItems ?? [];
-    if (subItems.length > 0) {
-      for (const si of subItems) addItem(si.id, si.label, si.amount);
-    } else {
-      addItem(entry.id, entry.label, entry.amount);
-    }
-  }
-
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
-}
-
 export function BudgetTable({
   title, variant, entries, onChange, totalLabel, total,
   readOnly, mode = "editing", incomeEntries = [], remainingOverrides, incomeRemaining,
@@ -118,13 +76,9 @@ export function BudgetTable({
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const toggleRow = (id: string) =>
     setExpandedRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-
-  const toggleGroup = (key: string) =>
-    setExpandedGroups((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
 
   const updateEntry = (id: string, patch: Partial<Entry>) =>
     onChange(entries.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -254,7 +208,6 @@ export function BudgetTable({
   };
 
   const isRecording = mode === "recording";
-  const groups = variant !== "leftover" ? buildGroups(entries) : [];
 
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
@@ -614,42 +567,6 @@ export function BudgetTable({
           <span className="uppercase tracking-wide">{totalLabel}</span>
           <span className="tabular-nums">{fmt(total)}</span>
         </div>
-
-        {groups.length > 0 && (
-          <div className="divide-y divide-border border-t border-border">
-            <div className="px-4 py-1.5 bg-muted/30 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
-              <Layers className="size-3" /> Groups
-            </div>
-            {groups.map((g) => {
-              const isOpen = expandedGroups.has(g.key);
-              return (
-                <div key={g.key}>
-                  <button
-                    onClick={() => toggleGroup(g.key)}
-                    className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-muted/40 transition-colors"
-                  >
-                    <span className="text-muted-foreground/50 shrink-0">
-                      {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                    </span>
-                    <span className="flex-1 min-w-0 text-left truncate font-medium">
-                      {g.name}
-                      <span className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
-                        {g.items.length}
-                      </span>
-                    </span>
-                    <span className="tabular-nums font-semibold">{fmt(g.total)}</span>
-                  </button>
-                  {isOpen && g.items.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between px-4 py-1.5 pl-10 bg-muted/20 text-xs text-muted-foreground">
-                      <span className="truncate">{item.label}</span>
-                      <span className="tabular-nums">{fmt(item.amount)}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        )}
       </div>
 
       {/* ── Transaction detail modal ───────────────────────────────────── */}

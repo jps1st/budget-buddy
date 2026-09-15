@@ -14,6 +14,7 @@ import {
   Copy,
   ChevronUp,
   ChevronDown,
+  ChevronRight,
   Menu,
   X,
   Undo2,
@@ -28,8 +29,10 @@ import {
   PencilLine,
   Receipt,
   ListTodo,
+  Layers,
 } from "lucide-react";
 import { BudgetTable, type Entry } from "@/components/BudgetTable";
+import { buildGroups } from "@/lib/groups";
 import { TodoList, type TodoEntry } from "@/components/TodoList";
 import {
   Dialog,
@@ -228,6 +231,7 @@ function BudgetApp() {
   const [importError, setImportError] = useState<string | null>(null);
   const [closeTarget, setCloseTarget] = useState<BudgetRow | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Sync state
   const [deviceId, setDeviceId] = useState<string | null>(null);
@@ -1244,6 +1248,18 @@ function BudgetApp() {
 
   const leftover = displayTotalIncome - displayTotalExpenses;
 
+  const groups = useMemo(
+    () => buildGroups([...(active?.income ?? []), ...(active?.expenses ?? [])]),
+    [active?.income, active?.expenses],
+  );
+
+  const toggleGroup = (key: string) =>
+    setExpandedGroups((s) => {
+      const n = new Set(s);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
+
   const chartData = [
     { name: budgetMode === "recording" ? "Remaining income" : "Total income", value: Math.max(displayTotalIncome, 0), color: "var(--chart-1)" },
     { name: budgetMode === "recording" ? "Remaining budget" : "Total expenses", value: Math.max(displayTotalExpenses, 0), color: "var(--chart-2)" },
@@ -2051,6 +2067,44 @@ function BudgetApp() {
                     <Stat label="Left over" value={leftover} colorVar="--leftover" />
                   </div>
                 </div>
+
+                {groups.length > 0 && (
+                  <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
+                    <div className="px-4 py-2.5 text-sm font-semibold tracking-wide uppercase flex items-center gap-1.5 text-muted-foreground">
+                      <Layers className="size-4" /> Groups
+                    </div>
+                    <div className="divide-y divide-border border-t border-border">
+                      {groups.map((g) => {
+                        const isOpen = expandedGroups.has(g.key);
+                        return (
+                          <div key={g.key}>
+                            <button
+                              onClick={() => toggleGroup(g.key)}
+                              className="w-full flex items-center gap-2 px-4 py-2.5 text-sm hover:bg-muted/40 transition-colors"
+                            >
+                              <span className="text-muted-foreground/50 shrink-0">
+                                {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                              </span>
+                              <span className="flex-1 min-w-0 text-left truncate font-medium">
+                                {g.name}
+                                <span className="ml-1.5 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                                  {g.items.length}
+                                </span>
+                              </span>
+                              <span className="tabular-nums font-semibold">{fmt(g.total)}</span>
+                            </button>
+                            {isOpen && g.items.map((item) => (
+                              <div key={item.id} className="flex items-center justify-between px-4 py-1.5 pl-10 bg-muted/20 text-xs text-muted-foreground">
+                                <span className="truncate">{item.label}</span>
+                                <span className="tabular-nums">{fmt(item.amount)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
