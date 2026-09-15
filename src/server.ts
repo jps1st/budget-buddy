@@ -1,3 +1,5 @@
+declare const __APP_VERSION__: string;
+
 import "./lib/error-capture";
 
 import { DatabaseSync } from "node:sqlite";
@@ -123,6 +125,14 @@ function handleAdminGetBudgetToken(id: string): Response {
   }
 
   return json({ roToken, rwToken });
+}
+
+// GET /api/version — lets clients detect a newer deployed build and prompt to reload
+function handleVersion(): Response {
+  return new Response(JSON.stringify({ version: __APP_VERSION__ }), {
+    status: 200,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
 }
 
 function handleCleanupExpired(): Response {
@@ -796,6 +806,9 @@ async function handleApiRequest(request: Request, url: URL): Promise<Response> {
 
   // Maintenance (no auth required — only affects data past its retention period)
   if (path === "/api/maintenance/cleanup-expired" && method === "POST") return handleCleanupExpired();
+
+  // Version check (no auth required)
+  if (path === "/api/version" && method === "GET") return handleVersion();
 
   // Admin audit/recovery dump (no auth — unprotected per explicit request; see /all)
   if (path === "/api/admin/all" && method === "GET") return handleAdminAll();

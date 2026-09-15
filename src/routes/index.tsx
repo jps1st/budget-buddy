@@ -87,6 +87,7 @@ import {
 } from "@/lib/sync-api";
 import { fmt } from "@/lib/utils";
 import { openReconnectingSocket, type ReconnectingSocket } from "@/lib/reconnecting-socket";
+import { useAppUpdate } from "@/hooks/use-app-update";
 
 function uuid(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -232,6 +233,7 @@ function BudgetApp() {
   const [closeTarget, setCloseTarget] = useState<BudgetRow | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  const updateAvailable = useAppUpdate(__APP_VERSION__);
 
   // Sync state
   const [deviceId, setDeviceId] = useState<string | null>(null);
@@ -2115,6 +2117,19 @@ function BudgetApp() {
           </footer>
         </div>
       </div>
+
+      {/* Update available banner */}
+      {updateAvailable && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 rounded-full border border-primary/30 bg-primary/10 backdrop-blur-sm shadow-lg pl-4 pr-1.5 py-1.5 text-sm text-primary">
+          <span className="font-medium">A new version is available</span>
+          <button
+            onClick={() => window.location.reload()}
+            className="text-xs px-3 py-1.5 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            Reload
+          </button>
+        </div>
+      )}
 
       {/* Floating undo/redo bar */}
       <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1 rounded-full border border-border bg-card/90 backdrop-blur-sm shadow-lg px-2 py-1.5">
