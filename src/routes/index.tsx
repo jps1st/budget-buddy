@@ -31,8 +31,8 @@ import {
   ListTodo,
   Layers,
 } from "lucide-react";
-import { BudgetTable, type Entry } from "@/components/BudgetTable";
-import { buildGroups } from "@/lib/groups";
+import { BudgetTable, type Entry, type Transaction, type SubItem } from "@/components/BudgetTable";
+import { buildGroups, parseGroupTag, round2 } from "@/lib/groups";
 import { TodoList, type TodoEntry } from "@/components/TodoList";
 import {
   Dialog,
@@ -135,6 +135,33 @@ function createBudget(overrides: Partial<BudgetRow> = {}): BudgetRow {
   };
 }
 
+function sanitizeTransactions(arr: unknown): Transaction[] | undefined {
+  if (!Array.isArray(arr)) return undefined;
+  const result = arr
+    .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+    .map((t) => ({
+      id: typeof t.id === "string" ? t.id : uuid(),
+      amount: typeof t.amount === "number" ? t.amount : parseFloat(String(t.amount)) || 0,
+      fromIncomeId: typeof t.fromIncomeId === "string" ? t.fromIncomeId : undefined,
+      date: typeof t.date === "string" ? t.date : "",
+      description: typeof t.description === "string" ? t.description : undefined,
+      receiptUrl: typeof t.receiptUrl === "string" ? t.receiptUrl : undefined,
+    }));
+  return result.length > 0 ? result : undefined;
+}
+
+function sanitizeSubItems(arr: unknown): SubItem[] | undefined {
+  if (!Array.isArray(arr)) return undefined;
+  const result = arr
+    .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
+    .map((s) => ({
+      id: typeof s.id === "string" ? s.id : uuid(),
+      label: typeof s.label === "string" ? s.label : "",
+      amount: typeof s.amount === "number" ? s.amount : parseFloat(String(s.amount)) || 0,
+    }));
+  return result.length > 0 ? result : undefined;
+}
+
 function sanitizeEntries(arr: unknown): Entry[] {
   if (!Array.isArray(arr)) return [];
   return arr
@@ -144,6 +171,9 @@ function sanitizeEntries(arr: unknown): Entry[] {
       label: typeof e.label === "string" ? e.label : "",
       amount:
         typeof e.amount === "number" ? e.amount : parseFloat(String(e.amount)) || 0,
+      completed: e.completed === true ? true : undefined,
+      transactions: sanitizeTransactions(e.transactions),
+      subItems: sanitizeSubItems(e.subItems),
     }));
 }
 
@@ -1255,6 +1285,31 @@ function BudgetApp() {
     [active?.income, active?.expenses],
   );
 
+  // Editing mode: checking off a Money Out item as complete deducts its amount from
+  // whichever Money In entry shares its *group tag (a lightweight "I actually paid this" ledger,
+  // separate from the full transaction-based recording mode).
+  const completedGroupTotals = useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const exp of active?.expenses ?? []) {
+      if (!exp.completed) continue;
+      const { group } = parseGroupTag(exp.label);
+      if (!group) continue;
+      const key = group.toLowerCase();
+      totals[key] = round2((totals[key] ?? 0) + exp.amount);
+    }
+    return totals;
+  }, [active?.expenses]);
+
+  const incomeGroupRemainingMap = useMemo(() => {
+    const result: Record<string, number> = {};
+    for (const inc of active?.income ?? []) {
+      const { group } = parseGroupTag(inc.label);
+      const deduction = group ? (completedGroupTotals[group.toLowerCase()] ?? 0) : 0;
+      result[inc.id] = round2(inc.amount - deduction);
+    }
+    return result;
+  }, [active?.income, completedGroupTotals]);
+
   const toggleGroup = (key: string) =>
     setExpandedGroups((s) => {
       const n = new Set(s);
@@ -1969,7 +2024,7 @@ function BudgetApp() {
                   totalLabel={budgetMode === "recording" ? "Remaining income" : "Total income"}
                   total={displayTotalIncome}
                   mode={budgetMode}
-                  remainingOverrides={budgetMode === "recording" ? incomeRemainingMap : undefined}
+                  remainingOverrides={budgetMode === "recording" ? incomeRemainingMap : incomeGroupRemainingMap}
                   incomeEntries={budgetMode === "recording" ? active.income : undefined}
                   readOnly={!!active.syncSource && !active.syncSource.canWrite}
                 />

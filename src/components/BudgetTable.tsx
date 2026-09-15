@@ -20,7 +20,7 @@ export type Transaction = {
 
 export type SubItem = { id: string; label: string; amount: number };
 
-export type Entry = { id: string; label: string; amount: number; transactions?: Transaction[]; subItems?: SubItem[] };
+export type Entry = { id: string; label: string; amount: number; transactions?: Transaction[]; subItems?: SubItem[]; completed?: boolean };
 
 type Variant = "income" | "expense" | "leftover";
 
@@ -88,6 +88,7 @@ export function BudgetTable({
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [focusedLabelId, setFocusedLabelId] = useState<string | null>(null);
+  const [showCompleted, setShowCompleted] = useState(false);
 
   const toggleRow = (id: string) =>
     setExpandedRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -219,15 +220,31 @@ export function BudgetTable({
     updateEntry(entryId, { subItems, amount: round2(subItems.reduce((s, si) => s + si.amount, 0)) });
   };
 
+  const toggleCompleted = (id: string, completed: boolean) =>
+    onChange(entries.map((e) => (e.id === id ? { ...e, completed } : e)), true);
+
   const isRecording = mode === "recording";
+  const showCheckbox = variant === "expense" && !isRecording;
+  const completedCount = showCheckbox ? entries.filter((e) => e.completed).length : 0;
+  const visibleEntries = showCheckbox && !showCompleted
+    ? entries.filter((e) => !e.completed)
+    : entries;
 
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden shadow-sm">
-      <div className={`${variantClasses[variant]} px-4 py-2.5 text-sm font-semibold tracking-wide uppercase`}>
-        {title}
+      <div className={`${variantClasses[variant]} px-4 py-2.5 text-sm font-semibold tracking-wide uppercase flex items-center justify-between gap-2`}>
+        <span>{title}</span>
+        {showCheckbox && completedCount > 0 && (
+          <button
+            onClick={() => setShowCompleted((s) => !s)}
+            className="text-[10px] font-medium normal-case tracking-normal px-2 py-1 rounded-full bg-black/15 hover:bg-black/25 transition-colors shrink-0"
+          >
+            {showCompleted ? "Hide completed" : `Show all (${completedCount})`}
+          </button>
+        )}
       </div>
       <div className="divide-y divide-border">
-        {entries.map((entry) => {
+        {visibleEntries.map((entry) => {
           const isOver     = dragOverId === entry.id && dragId !== entry.id;
           const isDragging = dragId === entry.id;
           const isPending  = pendingDelete === entry.id;
@@ -257,7 +274,9 @@ export function BudgetTable({
                     ? "flex flex-col gap-2"
                     : isRecording
                       ? "grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2"
-                      : "grid grid-cols-[auto_auto_1fr_auto_auto_auto] items-center gap-2"
+                      : showCheckbox
+                        ? "grid grid-cols-[auto_auto_auto_1fr_auto_auto_auto] items-center gap-2"
+                        : "grid grid-cols-[auto_auto_1fr_auto_auto_auto] items-center gap-2"
                 } ${isOver ? "border-t-2 border-primary bg-primary/5" : "hover:bg-muted/40"} ${
                   isDragging ? "opacity-40" : isExhausted ? "opacity-50" : ""
                 } ${isRecording && variant !== "leftover" ? "cursor-pointer" : ""}`}
@@ -336,6 +355,17 @@ export function BudgetTable({
                 ) : (
                   /* ── Editing mode row ────────────────────────────────── */
                   <>
+                    {showCheckbox && (
+                      <input
+                        type="checkbox"
+                        checked={!!entry.completed}
+                        disabled={readOnly}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => toggleCompleted(entry.id, e.target.checked)}
+                        className="size-4 accent-primary cursor-pointer shrink-0 disabled:cursor-default"
+                        aria-label={entry.completed ? "Mark as not complete" : "Mark as complete"}
+                      />
+                    )}
                     {!readOnly ? (
                       <span
                         draggable
@@ -367,7 +397,9 @@ export function BudgetTable({
                         onBlur={() => setFocusedLabelId((id) => (id === entry.id ? null : id))}
                         onChange={(e) => updateEntry(entry.id, { label: e.target.value })}
                         placeholder="Item"
-                        className="flex-1 min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                        className={`flex-1 min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1 ${
+                          entry.completed ? "line-through text-muted-foreground" : ""
+                        }`}
                       />
                       {group && <GroupBadge group={group} />}
                       {subCount > 0 && !isExpanded && (
@@ -383,7 +415,7 @@ export function BudgetTable({
                       placeholder="0.00"
                       className={`bg-transparent text-sm text-right outline-none w-16 sm:w-24 tabular-nums placeholder:text-muted-foreground/60 rounded px-2 py-1 ${
                         subCount > 0 ? "text-muted-foreground cursor-default" : "focus:bg-background"
-                      }`}
+                      } ${entry.completed ? "line-through text-muted-foreground" : ""}`}
                     />
                     {!readOnly && canExpand ? (
                       <button
@@ -413,6 +445,19 @@ export function BudgetTable({
                   </>
                 )}
               </div>
+
+              {/* ── Deducted-by-completed-items note (editing mode, income rows only) ── */}
+              {!isRecording && variant === "income" && remainingOverrides?.[entry.id] !== undefined &&
+                round2(remainingOverrides[entry.id]) !== round2(entry.amount) && (
+                <div className="flex items-center justify-between px-4 py-1 bg-muted/20 text-xs text-muted-foreground">
+                  <span>Remaining after completed items</span>
+                  <span className={`tabular-nums font-medium ${
+                    remainingOverrides[entry.id] < 0 ? "text-destructive" : "text-foreground"
+                  }`}>
+                    {fmt(remainingOverrides[entry.id])}
+                  </span>
+                </div>
+              )}
 
               {/* ── Sub-item breakdown (read-only reference, recording mode) ── */}
               {isRecording && isExpanded && subItems.map((si) => {
