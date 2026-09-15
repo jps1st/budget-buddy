@@ -4,7 +4,7 @@ function round2(n: number): number {
 
 // A trailing "*group-name" tag on a label assigns the item to a summary group,
 // e.g. "Milk *cash" → name "Milk", group "cash".
-function parseGroupTag(label: string): { name: string; group: string | null } {
+export function parseGroupTag(label: string): { name: string; group: string | null } {
   const m = label.match(/\*([^\s*]+)\s*$/);
   if (!m) return { name: label.trim(), group: null };
   const name = label.slice(0, m.index).trim();

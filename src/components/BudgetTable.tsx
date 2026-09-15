@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown, Paperclip, Camera, ImageIcon, FileText } from "lucide-react";
+import { Trash2, Plus, GripVertical, X, ChevronRight, ChevronDown, Paperclip, Camera, ImageIcon, FileText, Tag } from "lucide-react";
 import { fmt } from "@/lib/utils";
+import { parseGroupTag } from "@/lib/groups";
 import {
   Dialog,
   DialogContent,
@@ -60,6 +61,16 @@ function formatTxDate(iso: string): string {
 
 const emptyTx = () => ({ amount: "", fromId: "", date: todayISO(), description: "" });
 const emptySubItem = () => ({ label: "", amount: "" });
+
+// Pill-shaped badge marking an item as tagged into a *group-name summary group.
+function GroupBadge({ group }: { group: string }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 shrink-0">
+      <Tag className="size-2.5" />
+      {group}
+    </span>
+  );
+}
 
 export function BudgetTable({
   title, variant, entries, onChange, totalLabel, total,
@@ -230,6 +241,7 @@ export function BudgetTable({
           const canExpand  = variant !== "leftover";
           const isExpanded = canExpand && expandedRows.has(entry.id);
           const isExhausted = isRecording && variant !== "leftover" && entry.amount > 0 && remaining <= 0;
+          const { group } = parseGroupTag(entry.label);
 
           return (
             <div key={entry.id}>
@@ -285,6 +297,7 @@ export function BudgetTable({
                     </span>
                     <span className={`text-sm px-2 py-1 truncate flex items-center gap-1.5 ${isExhausted ? "line-through" : ""}`}>
                       {entry.label || <span className="text-muted-foreground/60">Item</span>}
+                      {group && <GroupBadge group={group} />}
                       {txCount > 0 && !isExpanded && (
                         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
                           {txCount}
@@ -346,6 +359,7 @@ export function BudgetTable({
                         placeholder="Item"
                         className="flex-1 min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
                       />
+                      {group && <GroupBadge group={group} />}
                       {subCount > 0 && !isExpanded && (
                         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground shrink-0">
                           {subCount}
@@ -501,7 +515,9 @@ export function BudgetTable({
               )}
 
               {/* ── Sub-item rows (editing mode) ── */}
-              {!isRecording && isExpanded && subItems.map((si) => (
+              {!isRecording && isExpanded && subItems.map((si) => {
+                const { group: siGroup } = parseGroupTag(si.label);
+                return (
                 <div key={si.id}
                   className="flex items-center gap-2 px-4 py-1 bg-muted/30">
                   <input type="text" value={si.label} readOnly={readOnly}
@@ -509,6 +525,7 @@ export function BudgetTable({
                     placeholder="Sub-item"
                     className="flex-1 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
                   />
+                  {siGroup && <GroupBadge group={siGroup} />}
                   <input type="number" value={si.amount === 0 ? "" : si.amount} readOnly={readOnly}
                     onChange={(e) => updateSubItem(entry.id, si.id, { amount: parseFloat(e.target.value) || 0 })}
                     placeholder="0.00"
@@ -524,7 +541,8 @@ export function BudgetTable({
                     <span className="w-3 shrink-0" />
                   )}
                 </div>
-              ))}
+                );
+              })}
 
               {/* ── Add sub-item form (editing mode) ───────────────────── */}
               {!isRecording && isExpanded && addingTo === entry.id && (
