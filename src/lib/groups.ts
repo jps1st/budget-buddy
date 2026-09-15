@@ -23,7 +23,7 @@ type GroupableEntry = {
 
 // Items with sub-items already fold their sub-items' amounts into their own total, so only
 // the sub-items (not the parent) are considered here to avoid double-counting group sums.
-export function buildGroups(entries: GroupableEntry[]): Group[] {
+function collectTagged(entries: GroupableEntry[]): Map<string, Group> {
   const map = new Map<string, Group>();
 
   const addItem = (id: string, rawLabel: string, amount: number) => {
@@ -48,5 +48,26 @@ export function buildGroups(entries: GroupableEntry[]): Group[] {
     }
   }
 
-  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return map;
+}
+
+// A group is only valid when it's defined on the income (Money In) side — expense items
+// tagged with a group name that has no matching income entry are left ungrouped.
+export function buildGroups(incomeEntries: GroupableEntry[], expenseEntries: GroupableEntry[]): Group[] {
+  const incomeTagged = collectTagged(incomeEntries);
+  const expenseTagged = collectTagged(expenseEntries);
+
+  const groups: Group[] = [];
+  for (const [key, incomeGroup] of incomeTagged) {
+    const expenseGroup = expenseTagged.get(key);
+    const items = [...incomeGroup.items, ...(expenseGroup?.items ?? [])];
+    groups.push({
+      key,
+      name: incomeGroup.name,
+      items,
+      total: round2(items.reduce((s, i) => s + i.amount, 0)),
+    });
+  }
+
+  return groups.sort((a, b) => a.name.localeCompare(b.name));
 }

@@ -1251,7 +1251,7 @@ function BudgetApp() {
   const leftover = displayTotalIncome - displayTotalExpenses;
 
   const groups = useMemo(
-    () => buildGroups([...(active?.income ?? []), ...(active?.expenses ?? [])]),
+    () => buildGroups(active?.income ?? [], active?.expenses ?? []),
     [active?.income, active?.expenses],
   );
 

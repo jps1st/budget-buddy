@@ -87,6 +87,7 @@ export function BudgetTable({
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [focusedLabelId, setFocusedLabelId] = useState<string | null>(null);
 
   const toggleRow = (id: string) =>
     setExpandedRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -242,7 +243,7 @@ export function BudgetTable({
           const isExpanded = canExpand && expandedRows.has(entry.id);
           const isExhausted = isRecording && variant !== "leftover" && entry.amount > 0 && remaining <= 0;
           const hasExpandable = subCount > 0 || (isRecording && txCount > 0);
-          const { group } = parseGroupTag(entry.label);
+          const { name: entryName, group } = parseGroupTag(entry.label);
 
           return (
             <div key={entry.id}>
@@ -301,7 +302,7 @@ export function BudgetTable({
                       <span className="w-3.5 shrink-0" />
                     )}
                     <span className={`text-sm px-2 py-1 truncate flex items-center gap-1.5 ${isExhausted ? "line-through" : ""}`}>
-                      {entry.label || <span className="text-muted-foreground/60">Item</span>}
+                      {entryName || <span className="text-muted-foreground/60">Item</span>}
                       {group && <GroupBadge group={group} />}
                       {txCount > 0 && !isExpanded && (
                         <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
@@ -359,7 +360,11 @@ export function BudgetTable({
                       <span className="w-3.5 shrink-0" />
                     )}
                     <span className="flex items-center gap-1.5 min-w-0">
-                      <input type="text" value={entry.label} readOnly={readOnly}
+                      <input type="text"
+                        value={focusedLabelId === entry.id ? entry.label : entryName}
+                        readOnly={readOnly}
+                        onFocus={() => setFocusedLabelId(entry.id)}
+                        onBlur={() => setFocusedLabelId((id) => (id === entry.id ? null : id))}
                         onChange={(e) => updateEntry(entry.id, { label: e.target.value })}
                         placeholder="Item"
                         className="flex-1 min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
@@ -533,11 +538,15 @@ export function BudgetTable({
 
               {/* ── Sub-item rows (editing mode) ── */}
               {!isRecording && isExpanded && subItems.map((si) => {
-                const { group: siGroup } = parseGroupTag(si.label);
+                const { name: siName, group: siGroup } = parseGroupTag(si.label);
                 return (
                 <div key={si.id}
                   className="flex items-center gap-2 px-4 py-1 bg-muted/30">
-                  <input type="text" value={si.label} readOnly={readOnly}
+                  <input type="text"
+                    value={focusedLabelId === si.id ? si.label : siName}
+                    readOnly={readOnly}
+                    onFocus={() => setFocusedLabelId(si.id)}
+                    onBlur={() => setFocusedLabelId((id) => (id === si.id ? null : id))}
                     onChange={(e) => updateSubItem(entry.id, si.id, { label: e.target.value })}
                     placeholder="Sub-item"
                     className="flex-1 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
