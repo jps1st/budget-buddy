@@ -18,7 +18,7 @@ export type Transaction = {
   receiptUrl?: string;
 };
 
-export type SubItem = { id: string; label: string; amount: number };
+export type SubItem = { id: string; label: string; amount: number; completed?: boolean };
 
 export type Entry = { id: string; label: string; amount: number; transactions?: Transaction[]; subItems?: SubItem[]; completed?: boolean };
 
@@ -90,11 +90,11 @@ export function BudgetTable({
   const [focusedLabelId, setFocusedLabelId] = useState<string | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
   const [pendingComplete, setPendingComplete] = useState<{
-    entryId: string;
     entryLabel: string;
     amount: number;
     group: string;
     matches: { id: string; name: string; before: number; after: number }[];
+    apply: () => void;
   } | null>(null);
 
   const toggleRow = (id: string) =>
@@ -196,6 +196,12 @@ export function BudgetTable({
     updateEntry(entryId, { transactions: (entry.transactions ?? []).filter((t) => t.id !== txId) });
   };
 
+  // A parent with sub-items is only ever "complete" when every sub-item is — recomputed
+  // any time the sub-item list itself changes (add/delete/edit), independent of the
+  // deliberate checkbox-driven completion flow below.
+  const deriveCompleted = (subItems: SubItem[], fallback: boolean | undefined) =>
+    subItems.length > 0 ? subItems.every((si) => si.completed) : fallback;
+
   const commitSubItem = (entryId: string) => {
     const amt = parseFloat(newSubItem.amount);
     if (!amt) return;
@@ -204,7 +210,12 @@ export function BudgetTable({
     const withItem = entries.map((e) => {
       if (e.id !== entryId) return e;
       const subItems = [...(e.subItems ?? []), item];
-      return { ...e, subItems, amount: round2(subItems.reduce((s, si) => s + si.amount, 0)) };
+      return {
+        ...e,
+        subItems,
+        amount: round2(subItems.reduce((s, si) => s + si.amount, 0)),
+        completed: deriveCompleted(subItems, e.completed),
+      };
     });
     onChange(withItem, true);
     setNewSubItem(emptySubItem());
@@ -215,7 +226,7 @@ export function BudgetTable({
     const entry = entries.find((e) => e.id === entryId);
     if (!entry) return;
     const subItems = (entry.subItems ?? []).filter((si) => si.id !== subId);
-    const patch: Partial<Entry> = { subItems };
+    const patch: Partial<Entry> = { subItems, completed: deriveCompleted(subItems, entry.completed) };
     if (subItems.length > 0) patch.amount = round2(subItems.reduce((s, si) => s + si.amount, 0));
     updateEntry(entryId, patch);
   };
@@ -224,20 +235,21 @@ export function BudgetTable({
     const entry = entries.find((e) => e.id === entryId);
     if (!entry) return;
     const subItems = (entry.subItems ?? []).map((si) => (si.id === subId ? { ...si, ...patch } : si));
-    updateEntry(entryId, { subItems, amount: round2(subItems.reduce((s, si) => s + si.amount, 0)) });
+    updateEntry(entryId, {
+      subItems,
+      amount: round2(subItems.reduce((s, si) => s + si.amount, 0)),
+      completed: deriveCompleted(subItems, entry.completed),
+    });
   };
 
   const toggleCompleted = (id: string, completed: boolean) =>
     onChange(entries.map((e) => (e.id === id ? { ...e, completed } : e)), true);
 
-  // Checking an item off may deduct its amount from a matching Money In entry, so confirm
-  // first and show exactly what changes; unchecking (and checking an untagged/unmatched
-  // item) has nothing to confirm, so it applies immediately.
-  const handleCheckboxChange = (entry: Entry, checked: boolean) => {
-    if (!checked) { toggleCompleted(entry.id, false); return; }
-    const { name: entryName, group } = parseGroupTag(entry.label);
-    if (!group) { toggleCompleted(entry.id, true); return; }
-    const key = group.toLowerCase();
+  // Marking something complete may deduct its amount from a matching Money In entry, so
+  // confirm first and show exactly what changes; the caller supplies `apply`, the update to
+  // run once confirmed (or right away when there's nothing to confirm).
+  const requestComplete = (opts: { entryLabel: string; group: string; amount: number; apply: () => void }) => {
+    const key = opts.group.toLowerCase();
     const matches = incomeEntries
       .filter((ie) => parseGroupTag(ie.label).group?.toLowerCase() === key)
       .map((ie) => {
@@ -246,11 +258,51 @@ export function BudgetTable({
           id: ie.id,
           name: parseGroupTag(ie.label).name || ie.label || "Untitled",
           before,
-          after: round2(before - entry.amount),
+          after: round2(before - opts.amount),
         };
       });
-    if (matches.length === 0) { toggleCompleted(entry.id, true); return; }
-    setPendingComplete({ entryId: entry.id, entryLabel: entryName || entry.label, amount: entry.amount, group, matches });
+    if (matches.length === 0) { opts.apply(); return; }
+    setPendingComplete({ entryLabel: opts.entryLabel, amount: opts.amount, group: opts.group, matches, apply: opts.apply });
+  };
+
+  // Unchecking (and checking an untagged/unmatched item) has nothing to confirm, so it
+  // applies immediately. A parent with sub-items instead bulk-toggles every sub-item —
+  // its own completed state always mirrors "are all sub-items done".
+  const handleCheckboxChange = (entry: Entry, checked: boolean) => {
+    const subItems = entry.subItems ?? [];
+    if (subItems.length > 0) {
+      const apply = (done: boolean) =>
+        onChange(entries.map((e) => (e.id === entry.id
+          ? { ...e, completed: done, subItems: subItems.map((si) => ({ ...si, completed: done })) }
+          : e)), true);
+      if (!checked) { apply(false); return; }
+      const { name: entryName, group } = parseGroupTag(entry.label);
+      if (!group) { apply(true); return; }
+      requestComplete({ entryLabel: entryName || entry.label, group, amount: entry.amount, apply: () => apply(true) });
+      return;
+    }
+
+    if (!checked) { toggleCompleted(entry.id, false); return; }
+    const { name: entryName, group } = parseGroupTag(entry.label);
+    if (!group) { toggleCompleted(entry.id, true); return; }
+    requestComplete({ entryLabel: entryName || entry.label, group, amount: entry.amount, apply: () => toggleCompleted(entry.id, true) });
+  };
+
+  // Checking off the last remaining sub-item completes the parent (and may trigger the same
+  // deduction confirmation, using the parent's own tag/total); unchecking any sub-item always
+  // un-completes the parent immediately.
+  const handleSubItemCheckboxChange = (entry: Entry, subItem: SubItem, checked: boolean) => {
+    const subItems = entry.subItems ?? [];
+    const updated = subItems.map((si) => (si.id === subItem.id ? { ...si, completed: checked } : si));
+    const allComplete = updated.length > 0 && updated.every((si) => si.completed);
+    const applyImmediate = (parentCompleted: boolean) =>
+      onChange(entries.map((e) => (e.id === entry.id ? { ...e, completed: parentCompleted, subItems: updated } : e)), true);
+
+    if (!checked || !allComplete) { applyImmediate(false); return; }
+
+    const { name: entryName, group } = parseGroupTag(entry.label);
+    if (!group) { applyImmediate(true); return; }
+    requestComplete({ entryLabel: entryName || entry.label, group, amount: entry.amount, apply: () => applyImmediate(true) });
   };
 
   const isRecording = mode === "recording";
@@ -502,14 +554,24 @@ export function BudgetTable({
                 </div>
               )}
 
-              {/* ── Sub-item breakdown (read-only reference, recording mode) ── */}
+              {/* ── Sub-item breakdown (recording mode) ── */}
               {isRecording && isExpanded && subItems.map((si) => {
                 const { name: siName, group: siGroup } = parseGroupTag(si.label);
                 return (
                   <div key={si.id} className="flex items-center gap-2 px-4 py-1 bg-muted/20 text-xs text-muted-foreground">
-                    <span className="flex-1 min-w-0 truncate">{siName || si.label}</span>
+                    {showCheckbox && (
+                      <input
+                        type="checkbox"
+                        checked={!!si.completed}
+                        disabled={readOnly}
+                        onChange={(e) => handleSubItemCheckboxChange(entry, si, e.target.checked)}
+                        className="size-3.5 accent-primary cursor-pointer shrink-0 disabled:cursor-default"
+                        aria-label={si.completed ? "Mark sub-item as not complete" : "Mark sub-item as complete"}
+                      />
+                    )}
+                    <span className={`flex-1 min-w-0 truncate ${si.completed ? "line-through" : ""}`}>{siName || si.label}</span>
                     {siGroup && <GroupBadge group={siGroup} />}
-                    <span className="tabular-nums">{fmt(si.amount)}</span>
+                    <span className={`tabular-nums ${si.completed ? "line-through" : ""}`}>{fmt(si.amount)}</span>
                   </div>
                 );
               })}
@@ -630,6 +692,16 @@ export function BudgetTable({
                 return (
                 <div key={si.id}
                   className="flex items-center gap-2 px-4 py-1 bg-muted/30">
+                  {showCheckbox && (
+                    <input
+                      type="checkbox"
+                      checked={!!si.completed}
+                      disabled={readOnly}
+                      onChange={(e) => handleSubItemCheckboxChange(entry, si, e.target.checked)}
+                      className="size-3.5 accent-primary cursor-pointer shrink-0 disabled:cursor-default"
+                      aria-label={si.completed ? "Mark sub-item as not complete" : "Mark sub-item as complete"}
+                    />
+                  )}
                   <input type="text"
                     value={focusedLabelId === si.id ? si.label : siName}
                     readOnly={readOnly}
@@ -637,13 +709,17 @@ export function BudgetTable({
                     onBlur={() => setFocusedLabelId((id) => (id === si.id ? null : id))}
                     onChange={(e) => updateSubItem(entry.id, si.id, { label: e.target.value })}
                     placeholder="Sub-item"
-                    className="flex-1 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                    className={`flex-1 min-w-0 bg-transparent text-xs outline-none placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1 ${
+                      si.completed ? "line-through text-muted-foreground" : ""
+                    }`}
                   />
                   {siGroup && <GroupBadge group={siGroup} />}
                   <input type="number" value={si.amount === 0 ? "" : si.amount} readOnly={readOnly}
                     onChange={(e) => updateSubItem(entry.id, si.id, { amount: parseFloat(e.target.value) || 0 })}
                     placeholder="0.00"
-                    className="bg-transparent text-xs text-right outline-none w-16 sm:w-20 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1"
+                    className={`bg-transparent text-xs text-right outline-none w-16 sm:w-20 tabular-nums placeholder:text-muted-foreground/60 focus:bg-background rounded px-2 py-1 ${
+                      si.completed ? "line-through text-muted-foreground" : ""
+                    }`}
                   />
                   {!readOnly ? (
                     <button onClick={() => deleteSubItem(entry.id, si.id)}
@@ -792,7 +868,7 @@ export function BudgetTable({
               </div>
               <div className="flex gap-2">
                 <button
-                  onClick={() => { toggleCompleted(pendingComplete.entryId, true); setPendingComplete(null); }}
+                  onClick={() => { pendingComplete.apply(); setPendingComplete(null); }}
                   className="flex-1 text-sm px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
                 >
                   Confirm
