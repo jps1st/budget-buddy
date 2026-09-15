@@ -241,6 +241,7 @@ export function BudgetTable({
           const canExpand  = variant !== "leftover";
           const isExpanded = canExpand && expandedRows.has(entry.id);
           const isExhausted = isRecording && variant !== "leftover" && entry.amount > 0 && remaining <= 0;
+          const hasExpandable = subCount > 0 || (isRecording && txCount > 0);
           const { group } = parseGroupTag(entry.label);
 
           return (
@@ -292,9 +293,13 @@ export function BudgetTable({
                     ) : (
                       <span className="w-4 shrink-0" />
                     )}
-                    <span className="text-muted-foreground/50 shrink-0">
-                      {isExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-                    </span>
+                    {hasExpandable ? (
+                      <span className="text-muted-foreground/50 shrink-0">
+                        {isExpanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                      </span>
+                    ) : (
+                      <span className="w-3.5 shrink-0" />
+                    )}
                     <span className={`text-sm px-2 py-1 truncate flex items-center gap-1.5 ${isExhausted ? "line-through" : ""}`}>
                       {entry.label || <span className="text-muted-foreground/60">Item</span>}
                       {group && <GroupBadge group={group} />}
@@ -342,7 +347,7 @@ export function BudgetTable({
                     ) : (
                       <span className="w-4 shrink-0" />
                     )}
-                    {canExpand ? (
+                    {canExpand && hasExpandable ? (
                       <button
                         onClick={(e) => { e.stopPropagation(); toggleRow(entry.id); }}
                         className="flex items-center justify-center text-muted-foreground/50 hover:text-muted-foreground transition-colors shrink-0"
@@ -403,6 +408,18 @@ export function BudgetTable({
                   </>
                 )}
               </div>
+
+              {/* ── Sub-item breakdown (read-only reference, recording mode) ── */}
+              {isRecording && isExpanded && subItems.map((si) => {
+                const { name: siName, group: siGroup } = parseGroupTag(si.label);
+                return (
+                  <div key={si.id} className="flex items-center gap-2 px-4 py-1 bg-muted/20 text-xs text-muted-foreground">
+                    <span className="flex-1 min-w-0 truncate">{siName || si.label}</span>
+                    {siGroup && <GroupBadge group={siGroup} />}
+                    <span className="tabular-nums">{fmt(si.amount)}</span>
+                  </div>
+                );
+              })}
 
               {/* ── Transaction sub-rows (recording mode) ── */}
               {isRecording && isExpanded && (entry.transactions ?? []).map((tx) => {
