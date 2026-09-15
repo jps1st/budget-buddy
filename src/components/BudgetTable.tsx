@@ -89,6 +89,13 @@ export function BudgetTable({
   const [uploading, setUploading] = useState(false);
   const [focusedLabelId, setFocusedLabelId] = useState<string | null>(null);
   const [showCompleted, setShowCompleted] = useState(false);
+  const [pendingComplete, setPendingComplete] = useState<{
+    entryId: string;
+    entryLabel: string;
+    amount: number;
+    group: string;
+    matches: { id: string; name: string; before: number; after: number }[];
+  } | null>(null);
 
   const toggleRow = (id: string) =>
     setExpandedRows((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -223,8 +230,31 @@ export function BudgetTable({
   const toggleCompleted = (id: string, completed: boolean) =>
     onChange(entries.map((e) => (e.id === id ? { ...e, completed } : e)), true);
 
+  // Checking an item off may deduct its amount from a matching Money In entry, so confirm
+  // first and show exactly what changes; unchecking (and checking an untagged/unmatched
+  // item) has nothing to confirm, so it applies immediately.
+  const handleCheckboxChange = (entry: Entry, checked: boolean) => {
+    if (!checked) { toggleCompleted(entry.id, false); return; }
+    const { name: entryName, group } = parseGroupTag(entry.label);
+    if (!group) { toggleCompleted(entry.id, true); return; }
+    const key = group.toLowerCase();
+    const matches = incomeEntries
+      .filter((ie) => parseGroupTag(ie.label).group?.toLowerCase() === key)
+      .map((ie) => {
+        const before = incomeRemaining?.[ie.id] ?? ie.amount;
+        return {
+          id: ie.id,
+          name: parseGroupTag(ie.label).name || ie.label || "Untitled",
+          before,
+          after: round2(before - entry.amount),
+        };
+      });
+    if (matches.length === 0) { toggleCompleted(entry.id, true); return; }
+    setPendingComplete({ entryId: entry.id, entryLabel: entryName || entry.label, amount: entry.amount, group, matches });
+  };
+
   const isRecording = mode === "recording";
-  const showCheckbox = variant === "expense" && !isRecording;
+  const showCheckbox = variant === "expense";
   const completedCount = showCheckbox ? entries.filter((e) => e.completed).length : 0;
   const visibleEntries = showCheckbox && !showCompleted
     ? entries.filter((e) => !e.completed)
@@ -237,7 +267,7 @@ export function BudgetTable({
         {showCheckbox && completedCount > 0 && (
           <button
             onClick={() => setShowCompleted((s) => !s)}
-            className="text-[10px] font-medium normal-case tracking-normal px-2 py-1 rounded-full bg-black/15 hover:bg-black/25 transition-colors shrink-0"
+            className="text-[10px] font-semibold normal-case tracking-normal px-2.5 py-1 rounded-full bg-white/95 text-expense hover:bg-white transition-colors shrink-0 shadow-sm"
           >
             {showCompleted ? "Hide completed" : `Show all (${completedCount})`}
           </button>
@@ -273,7 +303,9 @@ export function BudgetTable({
                   isPending
                     ? "flex flex-col gap-2"
                     : isRecording
-                      ? "grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2"
+                      ? showCheckbox
+                        ? "grid grid-cols-[auto_auto_auto_1fr_auto_auto] items-center gap-2"
+                        : "grid grid-cols-[auto_auto_1fr_auto_auto] items-center gap-2"
                       : showCheckbox
                         ? "grid grid-cols-[auto_auto_auto_1fr_auto_auto_auto] items-center gap-2"
                         : "grid grid-cols-[auto_auto_1fr_auto_auto_auto] items-center gap-2"
@@ -300,6 +332,17 @@ export function BudgetTable({
                 ) : isRecording ? (
                   /* ── Recording mode row ─────────────────────────────── */
                   <>
+                    {showCheckbox && (
+                      <input
+                        type="checkbox"
+                        checked={!!entry.completed}
+                        disabled={readOnly}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => handleCheckboxChange(entry, e.target.checked)}
+                        className="size-4 accent-primary cursor-pointer shrink-0 disabled:cursor-default"
+                        aria-label={entry.completed ? "Mark as not complete" : "Mark as complete"}
+                      />
+                    )}
                     {!readOnly && variant !== "leftover" ? (
                       <span
                         draggable
@@ -320,7 +363,7 @@ export function BudgetTable({
                     ) : (
                       <span className="w-3.5 shrink-0" />
                     )}
-                    <span className={`text-sm px-2 py-1 truncate flex items-center gap-1.5 ${isExhausted ? "line-through" : ""}`}>
+                    <span className={`text-sm px-2 py-1 truncate flex items-center gap-1.5 ${isExhausted || entry.completed ? "line-through" : ""}`}>
                       {entryName || <span className="text-muted-foreground/60">Item</span>}
                       {group && <GroupBadge group={group} />}
                       {txCount > 0 && !isExpanded && (
@@ -361,7 +404,7 @@ export function BudgetTable({
                         checked={!!entry.completed}
                         disabled={readOnly}
                         onClick={(e) => e.stopPropagation()}
-                        onChange={(e) => toggleCompleted(entry.id, e.target.checked)}
+                        onChange={(e) => handleCheckboxChange(entry, e.target.checked)}
                         className="size-4 accent-primary cursor-pointer shrink-0 disabled:cursor-default"
                         aria-label={entry.completed ? "Mark as not complete" : "Mark as complete"}
                       />
@@ -715,6 +758,52 @@ export function BudgetTable({
                   )}
                 </div>
               )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Confirm completing an item that deducts from a Money In group ── */}
+      <Dialog open={!!pendingComplete} onOpenChange={(o) => { if (!o) setPendingComplete(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Mark as complete?</DialogTitle>
+          </DialogHeader>
+          {pendingComplete && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Marking <span className="font-medium text-foreground">{pendingComplete.entryLabel || "this item"}</span> complete
+                deducts <span className="font-medium text-foreground">{fmt(pendingComplete.amount)}</span> from
+                the "{pendingComplete.group}" group:
+              </p>
+              <div className="space-y-2">
+                {pendingComplete.matches.map((m) => (
+                  <div key={m.id} className="flex items-center justify-between rounded-md bg-muted/50 px-4 py-3 text-sm">
+                    <span className="font-medium">{m.name}</span>
+                    <span className="tabular-nums flex items-center gap-1.5">
+                      <span className="text-muted-foreground">{fmt(m.before)}</span>
+                      <span className="text-muted-foreground">→</span>
+                      <span className={`font-semibold ${m.after < 0 ? "text-destructive" : "text-foreground"}`}>
+                        {fmt(m.after)}
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { toggleCompleted(pendingComplete.entryId, true); setPendingComplete(null); }}
+                  className="flex-1 text-sm px-3 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                >
+                  Confirm
+                </button>
+                <button
+                  onClick={() => setPendingComplete(null)}
+                  className="flex-1 text-sm px-3 py-2 rounded-md border border-border hover:bg-muted transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           )}
         </DialogContent>
