@@ -47,19 +47,33 @@ function collectTagged(entries: GroupableEntry[]): Map<string, Group> {
   return map;
 }
 
-// A group is only valid when it's defined on the income (Money In) side — expense items
-// tagged with a group name that has no matching income entry are left ungrouped.
+// A group is only valid when it's defined on the income (Money In) side — but a Money In
+// entry names a group by its own plain label, not by carrying a matching *tag itself: an
+// expense tagged "*cash" belongs to the Money In entry literally labeled "cash".
 export function buildGroups(incomeEntries: GroupableEntry[], expenseEntries: GroupableEntry[]): Group[] {
-  const incomeTagged = collectTagged(incomeEntries);
   const expenseTagged = collectTagged(expenseEntries);
 
   const groups: Group[] = [];
-  for (const [key, incomeGroup] of incomeTagged) {
-    const expenseGroup = expenseTagged.get(key);
-    const items = [...incomeGroup.items, ...(expenseGroup?.items ?? [])];
+  for (const [key, expenseGroup] of expenseTagged) {
+    const incomeItems: GroupItem[] = [];
+    for (const entry of incomeEntries) {
+      const subItems = entry.subItems ?? [];
+      if (subItems.length > 0) {
+        for (const si of subItems) {
+          if (si.label.trim().toLowerCase() === key) {
+            incomeItems.push({ id: si.id, label: si.label.trim(), amount: si.amount, completed: si.completed });
+          }
+        }
+      } else if (entry.label.trim().toLowerCase() === key) {
+        incomeItems.push({ id: entry.id, label: entry.label.trim(), amount: entry.amount, completed: entry.completed });
+      }
+    }
+    if (incomeItems.length === 0) continue;
+
+    const items = [...incomeItems, ...expenseGroup.items];
     groups.push({
       key,
-      name: incomeGroup.name,
+      name: incomeItems[0].label,
       items,
       total: round2(items.reduce((s, i) => s + i.amount, 0)),
     });

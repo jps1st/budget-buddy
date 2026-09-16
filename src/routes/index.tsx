@@ -1236,8 +1236,9 @@ function BudgetApp() {
   );
 
   // Editing mode: checking off a Money Out item as complete deducts its amount from
-  // whichever Money In entry shares its *group tag (a lightweight "I actually paid this" ledger,
-  // separate from the full transaction-based recording mode).
+  // whichever Money In entry is named after its *group tag (a lightweight "I actually paid
+  // this" ledger, separate from the full transaction-based recording mode). A Money In entry
+  // names a group by its own plain label — "*cash" matches an entry literally labeled "cash".
   const completedGroupTotals = useMemo(() => {
     const totals: Record<string, number> = {};
     for (const exp of active?.expenses ?? []) {
@@ -1253,8 +1254,8 @@ function BudgetApp() {
   const incomeGroupRemainingMap = useMemo(() => {
     const result: Record<string, number> = {};
     for (const inc of active?.income ?? []) {
-      const { group } = parseGroupTag(inc.label);
-      const deduction = group ? (completedGroupTotals[group.toLowerCase()] ?? 0) : 0;
+      const key = inc.label.trim().toLowerCase();
+      const deduction = key ? (completedGroupTotals[key] ?? 0) : 0;
       result[inc.id] = round2(inc.amount - deduction);
     }
     return result;

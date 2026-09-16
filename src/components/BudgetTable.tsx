@@ -249,14 +249,16 @@ export function BudgetTable({
   // confirm first and show exactly what changes; the caller supplies `apply`, the update to
   // run once confirmed (or right away when there's nothing to confirm).
   const requestComplete = (opts: { entryLabel: string; group: string; amount: number; apply: () => void }) => {
+    // A Money In entry names a group by its own plain label — e.g. an expense tagged
+    // "*cash" matches a Money In entry literally labeled "cash", not one tagged "*cash" itself.
     const key = opts.group.toLowerCase();
     const matches = incomeEntries
-      .filter((ie) => parseGroupTag(ie.label).group?.toLowerCase() === key)
+      .filter((ie) => ie.label.trim().toLowerCase() === key)
       .map((ie) => {
         const before = incomeRemaining?.[ie.id] ?? ie.amount;
         return {
           id: ie.id,
-          name: parseGroupTag(ie.label).name || ie.label || "Untitled",
+          name: ie.label.trim() || "Untitled",
           before,
           after: round2(before - opts.amount),
         };
