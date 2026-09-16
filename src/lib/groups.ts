@@ -75,7 +75,8 @@ export function buildGroups(incomeEntries: GroupableEntry[], expenseEntries: Gro
       key,
       name: incomeItems[0].label,
       items,
-      total: round2(items.reduce((s, i) => s + i.amount, 0)),
+      // Completed items are settled, so they no longer count toward the group's outstanding total.
+      total: round2(items.reduce((s, i) => s + (i.completed ? 0 : i.amount), 0)),
     });
   }
 
