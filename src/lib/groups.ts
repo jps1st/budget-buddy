@@ -47,36 +47,41 @@ function collectTagged(entries: GroupableEntry[]): Map<string, Group> {
   return map;
 }
 
-// A group is only valid when it's defined on the income (Money In) side — but a Money In
-// entry names a group by its own plain label, not by carrying a matching *tag itself: an
-// expense tagged "*cash" belongs to the Money In entry literally labeled "cash".
+// A Money In entry names a group by its own plain label, not by carrying a matching *tag
+// itself: an expense tagged "*cash" belongs to the Money In entry literally labeled "cash".
+// Returns that entry's (or matching sub-item's) label, used only to name/validate the group —
+// the income entry itself is not a group member, since the summary is Money Out only.
+function findIncomeGroupName(incomeEntries: GroupableEntry[], key: string): string | null {
+  for (const entry of incomeEntries) {
+    const subItems = entry.subItems ?? [];
+    if (subItems.length > 0) {
+      for (const si of subItems) {
+        if (si.label.trim().toLowerCase() === key) return si.label.trim();
+      }
+    } else if (entry.label.trim().toLowerCase() === key) {
+      return entry.label.trim();
+    }
+  }
+  return null;
+}
+
+// A group is only valid when it's defined on the income (Money In) side, but the summary
+// itself only lists Money Out (expense) items — the matching Money In entry just validates
+// and names the group, it isn't counted as a member.
 export function buildGroups(incomeEntries: GroupableEntry[], expenseEntries: GroupableEntry[]): Group[] {
   const expenseTagged = collectTagged(expenseEntries);
 
   const groups: Group[] = [];
   for (const [key, expenseGroup] of expenseTagged) {
-    const incomeItems: GroupItem[] = [];
-    for (const entry of incomeEntries) {
-      const subItems = entry.subItems ?? [];
-      if (subItems.length > 0) {
-        for (const si of subItems) {
-          if (si.label.trim().toLowerCase() === key) {
-            incomeItems.push({ id: si.id, label: si.label.trim(), amount: si.amount, completed: si.completed });
-          }
-        }
-      } else if (entry.label.trim().toLowerCase() === key) {
-        incomeItems.push({ id: entry.id, label: entry.label.trim(), amount: entry.amount, completed: entry.completed });
-      }
-    }
-    if (incomeItems.length === 0) continue;
+    const name = findIncomeGroupName(incomeEntries, key);
+    if (!name) continue;
 
-    const items = [...incomeItems, ...expenseGroup.items];
     groups.push({
       key,
-      name: incomeItems[0].label,
-      items,
+      name,
+      items: expenseGroup.items,
       // Completed items are settled, so they no longer count toward the group's outstanding total.
-      total: round2(items.reduce((s, i) => s + (i.completed ? 0 : i.amount), 0)),
+      total: round2(expenseGroup.items.reduce((s, i) => s + (i.completed ? 0 : i.amount), 0)),
     });
   }
 
