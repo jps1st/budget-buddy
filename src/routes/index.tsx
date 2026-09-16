@@ -31,7 +31,7 @@ import {
   ListTodo,
   Layers,
 } from "lucide-react";
-import { BudgetTable, type Entry, type Transaction, type SubItem } from "@/components/BudgetTable";
+import { BudgetTable, type Entry } from "@/components/BudgetTable";
 import { buildGroups, parseGroupTag, round2 } from "@/lib/groups";
 import { TodoList, type TodoEntry } from "@/components/TodoList";
 import {
@@ -85,19 +85,10 @@ import {
   type ShareLinks,
   type WorkspaceLinks,
 } from "@/lib/sync-api";
-import { fmt } from "@/lib/utils";
+import { fmt, uuid } from "@/lib/utils";
+import { sanitizeEntries } from "@/lib/sanitize-entries";
 import { openReconnectingSocket, type ReconnectingSocket } from "@/lib/reconnecting-socket";
 import { useAppUpdate } from "@/hooks/use-app-update";
-
-function uuid(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
-  });
-}
 
 export const Route = createFileRoute("/")({
   component: BudgetApp,
@@ -133,48 +124,6 @@ function createBudget(overrides: Partial<BudgetRow> = {}): BudgetRow {
     order: Date.now(),
     ...overrides,
   };
-}
-
-function sanitizeTransactions(arr: unknown): Transaction[] | undefined {
-  if (!Array.isArray(arr)) return undefined;
-  const result = arr
-    .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
-    .map((t) => ({
-      id: typeof t.id === "string" ? t.id : uuid(),
-      amount: typeof t.amount === "number" ? t.amount : parseFloat(String(t.amount)) || 0,
-      fromIncomeId: typeof t.fromIncomeId === "string" ? t.fromIncomeId : undefined,
-      date: typeof t.date === "string" ? t.date : "",
-      description: typeof t.description === "string" ? t.description : undefined,
-      receiptUrl: typeof t.receiptUrl === "string" ? t.receiptUrl : undefined,
-    }));
-  return result.length > 0 ? result : undefined;
-}
-
-function sanitizeSubItems(arr: unknown): SubItem[] | undefined {
-  if (!Array.isArray(arr)) return undefined;
-  const result = arr
-    .filter((s): s is Record<string, unknown> => !!s && typeof s === "object")
-    .map((s) => ({
-      id: typeof s.id === "string" ? s.id : uuid(),
-      label: typeof s.label === "string" ? s.label : "",
-      amount: typeof s.amount === "number" ? s.amount : parseFloat(String(s.amount)) || 0,
-    }));
-  return result.length > 0 ? result : undefined;
-}
-
-function sanitizeEntries(arr: unknown): Entry[] {
-  if (!Array.isArray(arr)) return [];
-  return arr
-    .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
-    .map((e) => ({
-      id: typeof e.id === "string" ? e.id : uuid(),
-      label: typeof e.label === "string" ? e.label : "",
-      amount:
-        typeof e.amount === "number" ? e.amount : parseFloat(String(e.amount)) || 0,
-      completed: e.completed === true ? true : undefined,
-      transactions: sanitizeTransactions(e.transactions),
-      subItems: sanitizeSubItems(e.subItems),
-    }));
 }
 
 function sanitizeTodos(arr: unknown): TodoEntry[] {
