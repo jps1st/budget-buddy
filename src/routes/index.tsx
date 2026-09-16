@@ -1221,7 +1221,7 @@ function BudgetApp() {
     [active?.income],
   );
   const totalExpenses = useMemo(
-    () => (active?.expenses ?? []).reduce((s, e) => s + (e.amount || 0), 0),
+    () => (active?.expenses ?? []).reduce((s, e) => s + (e.completed ? 0 : (e.amount || 0)), 0),
     [active?.expenses],
   );
 
@@ -1269,6 +1269,7 @@ function BudgetApp() {
   );
   const totalExpensesRecording = useMemo(
     () => (active?.expenses ?? []).reduce((s, e) => {
+      if (e.completed) return s;
       const spent = (e.transactions ?? []).reduce((sum, t) => sum + t.amount, 0);
       return s + (e.amount - spent);
     }, 0),
@@ -2152,8 +2153,8 @@ function BudgetApp() {
                             </button>
                             {isOpen && g.items.map((item) => (
                               <div key={item.id} className="flex items-center justify-between px-4 py-1.5 pl-10 bg-muted/20 text-xs text-muted-foreground">
-                                <span className="truncate">{item.label}</span>
-                                <span className="tabular-nums">{fmt(item.amount)}</span>
+                                <span className={`truncate ${item.completed ? "line-through" : ""}`}>{item.label}</span>
+                                <span className={`tabular-nums ${item.completed ? "line-through" : ""}`}>{fmt(item.amount)}</span>
                               </div>
                             ))}
                           </div>
